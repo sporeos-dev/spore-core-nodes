@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v1/spore.manifest.v1.schema.yaml
+
+id: dev.sporeos.dialog
+name: Dialog
+version: 0.1.0
+schema: SPORE/v1d0
+description: Handles file and directory picker dialogs.
+app: /usr/local/bin/spore-dialog
+autostart: true
+
+api:
+  - name: file.open
+    description: Opens a file picker dialog to select a file.
+    usage:
+      - file.open
+      - file.open ext=[ '.manifest.spore.yaml' ]
+    inputs:
+      - name: ext
+        type: string
+        description: List of file extensions to filter by.
+        required: false
+    outputs:
+      - name: path
+        type: string
+        description: Path to the selected file.
+
+  - name: dir.open
+    description: Opens a directory picker dialog to select a directory or folder.
+    usage:
+      - dir.open
+    inputs: []
+    outputs:
+      - name: path
+        type: string
+        description: Path to the selected directory.
+
+  - name: file.save
+    description: Opens a file save dialog to choose a file path for saving.
+    usage:
+      - file.save
+    inputs: []
+    outputs:
+      - name: path
+        type: string
+        description: Path where the file should be saved.

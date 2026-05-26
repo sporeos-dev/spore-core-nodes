@@ -29,4 +29,13 @@ go.work.sum
 
 # Editor/IDE
 # .idea/
-# .vscode/
+.vscode/
+.github/
+.DS_Store
+
+
+spore/spore
+spore-dialog/spore-dialog
+spore-shell/spore-shell
+spore-log/spore-log
+spore-witness/spore-witness

@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v1/spore.manifest.v1.schema.yaml
+
+id: dev.sporeos.witness
+name: Witness
+version: 0.1.0
+schema: SPORE/v1d0
+description: Live hub traffic viewer. Outputs all witness copies to stdout with colour-coded kind labels for active debugging.
+app: /usr/local/bin/spore-witness
+witness: true
+autostart: false

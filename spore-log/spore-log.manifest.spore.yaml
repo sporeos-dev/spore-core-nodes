@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v1/spore.manifest.v1.schema.yaml
+
+id: dev.sporeos.log
+name: Log
+version: 0.1.0
+schema: SPORE/v1d0
+description: "Persistent rolling file logger. Writes all hub witness traffic unfiltered to the system log directory (macOS: /Library/Logs/spore-os/spore.log), rotating at 10 MB."
+app: /usr/local/bin/spore-log
+witness: true
+autostart: true

@@ -1,3 +1,6 @@
+// Copyright 2026 mharr
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (

@@ -1,3 +1,6 @@
+# Copyright 2026 mharr
+# SPDX-License-Identifier: Apache-2.0
+
 # yaml-language-server: $schema=../../spore-os-protocol/versions/v1/spore.manifest.v1.schema.yaml
 
 id: dev.sporeos.log

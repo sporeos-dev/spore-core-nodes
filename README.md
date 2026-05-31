@@ -3,10 +3,17 @@
 > [sporeos-dev organization README](https://github.com/sporeos-dev/.github).
 
 # spore-core-nodes
-Central nodes of the Spore OS ecosystem.
 
-- **spore** — One-off command tool. Send a single command to the hub and get a response.
-- **spore-shell** — Interactive shell (REPL) for continuous Spore commands.
-- **spore-dialog** — Native file/directory picker dialogs, used as a helper node.
-- **spore-log** - Logs spore interactions for auditability.
-- **spore-witness** - Provides a live view for spore interactions.
+Built-in nodes that ship with Spore OS.
+
+| Node | Description |
+| :--- | :--- |
+| [spore](spore/README.md) | One-off command-line tool. Send a single command to the hub and print the response. |
+| [spore-shell](spore-shell/README.md) | Interactive shell (REPL) for continuous Spore commands. |
+| [spore-dialog](spore-dialog/README.md) | Native file and directory picker dialogs. |
+| [spore-log](spore-log/README.md) | Persistent rolling file logger for hub traffic. |
+| [spore-witness](spore-witness/README.md) | Live colour-coded hub traffic viewer for debugging. |
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).

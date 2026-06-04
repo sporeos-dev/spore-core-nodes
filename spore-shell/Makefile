@@ -39,4 +39,4 @@ setup:
 	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	@echo "==> Installing govulncheck..."
 	@go install golang.org/x/vuln/cmd/govulncheck@latest
-	@echo "==> Done. Ensure $$(go env GOPATH)/bin is on your PATH."
+	@echo "==> Done. Ensure Go bin directory is on your PATH."

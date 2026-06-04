@@ -5,7 +5,7 @@
 > [sporeos-dev organization README](https://github.com/sporeos-dev/.github).
 
 > [!WARNING]
-> **Alpha Software: Use at Your Own Risk**
+> **Alpha Software: Use at Your Own Risk.**
 > Spore OS is currently in an alpha state.
 > It is under active development, breaking changes are expected frequently.
 > Do not use in production environments.

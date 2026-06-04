@@ -5,10 +5,18 @@ MODULES := spore spore-log spore-shell spore-dialog spore-witness
 .PHONY: check analyze setup $(MODULES)
 
 check:
-	@for m in $(MODULES); do $(MAKE) -C $$m check; done
+	@$(MAKE) -C spore check
+	@$(MAKE) -C spore-log check
+	@$(MAKE) -C spore-shell check
+	@$(MAKE) -C spore-dialog check
+	@$(MAKE) -C spore-witness check
 
 analyze:
-	@for m in $(MODULES); do $(MAKE) -C $$m analyze; done
+	@$(MAKE) -C spore analyze
+	@$(MAKE) -C spore-log analyze
+	@$(MAKE) -C spore-shell analyze
+	@$(MAKE) -C spore-dialog analyze
+	@$(MAKE) -C spore-witness analyze
 
 setup:
 	@$(MAKE) -C spore setup

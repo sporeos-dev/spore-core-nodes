@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"spore-shell/internal/utilities"
 	"strings"
 	"sync"
 
@@ -562,6 +563,10 @@ func main() {
 		if status == "disconnected" {
 			fmt.Println("Not connected")
 			continue
+		}
+
+		if !utilities.HasHandle(input) {
+			input = utilities.AppendHandle(input)
 		}
 
 		if err := client.Send(input); err != nil {

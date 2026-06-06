@@ -36,7 +36,6 @@ go.work.sum
 
 
 spore/spore
-spore-dialog/spore-dialog
 spore-shell/spore-shell
 spore-log/spore-log
 spore-witness/spore-witness

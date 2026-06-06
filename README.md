@@ -19,7 +19,6 @@ Built-in nodes that ship with Spore OS.
 | :--- | :--- |
 | [spore](spore/README.md) | One-off command-line tool. Send a single command to the hub and print the response. |
 | [spore-shell](spore-shell/README.md) | Interactive shell (REPL) for continuous Spore commands. |
-| [spore-dialog](spore-dialog/README.md) | Native file and directory picker dialogs. |
 | [spore-log](spore-log/README.md) | Persistent rolling file logger for hub traffic. |
 | [spore-witness](spore-witness/README.md) | Live colour-coded hub traffic viewer for debugging. |
 

@@ -465,13 +465,13 @@ func main() {
 
 	client := spore.NewClient(appId)
 
-	// When the hub routes cli.echo back to us, print the received expression
-	// and send the reply.
-	client.HandleRequest("echo", func(call *spore.Call) {
-		expression := call.ArgIf("expression", "")
-		printAbovePrompt("[echo received: " + expression + "]")
-		call.Reply(map[string]string{"echo": expression})
-	})
+	// // When the hub routes cli.echo back to us, print the received expression
+	// // and send the reply.
+	// client.HandleRequest("echo", func(call *spore.Call) {
+	// 	expression := call.ArgIf("expression", "")
+	// 	printAbovePrompt("[echo received: " + expression + "]")
+	// 	call.Reply(map[string]string{"echo": expression})
+	// })
 
 	// Print all responses that don't match a specific HandleResponse subject.
 	client.HandleResponseFallback(func(resp *spore.Response) {

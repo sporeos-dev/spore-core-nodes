@@ -9,19 +9,3 @@ version: 0.1.0
 schema: SPORE/v1d0
 description: An interactive shell (REPL) for sending commands to the Spore-OS ecosystem.
 app: /usr/local/bin/spore-shell
-
-api:
-  - name: echo
-    description: Echo an expression back, useful for testing and debugging.
-    usage:
-      - echo expression=hello
-      - echo expression='some expression to test'
-    inputs:
-      - name: expression
-        type: string
-        description: The expression to echo back.
-        required: true
-    outputs:
-      - name: echo
-        type: string
-        description: The echoed expression.

@@ -41,6 +41,12 @@ func main() {
 
 	cmd := strings.Join(args, " ")
 
+	// subscribe/unsubscribe require a persistent connection — block them here.
+	if args[0] == "SPORE.topic.subscribe" || args[0] == "SPORE.topic.unsubscribe" {
+		fmt.Fprintln(os.Stderr, "error: subscribe and unsubscribe require a persistent connection; use spore-shell instead")
+		os.Exit(1)
+	}
+
 	// Auto-generate a handle if none was supplied.
 	hasHandle := false
 	for _, arg := range args {

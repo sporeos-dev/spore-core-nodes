@@ -22,6 +22,9 @@ var errInterrupt = errors.New("interrupt")
 
 const appId = "dev.sporeos.shell"
 
+// defaultTimeoutMs is used for subscribe/unsubscribe hub handshakes.
+const defaultTimeoutMs = 30_000
+
 var outputMutex sync.Mutex
 
 // currentPrompt holds the prompt string so receiveMessages can redraw it
@@ -458,6 +461,44 @@ func printResponse(resp *spore.Response) {
 	printAbovePrompt(strings.Join(lines, "\r\n"))
 }
 
+// printPublishMessage formats an incoming pub/sub message and prints it above
+// the current prompt, just like a regular response.
+func printPublishMessage(msg *spore.PublishMessage) {
+	lines := []string{""}
+	lines = append(lines, "  [publish] "+msg.Topic)
+	if msg.Cast != "" {
+		lines = append(lines, "  cast: "+msg.Cast)
+	}
+	if len(msg.Args) > 0 || len(msg.Flags) > 0 {
+		lines = append(lines, "  ----------")
+		keys := make([]string, 0, len(msg.Args))
+		for k := range msg.Args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			lines = append(lines, "  "+k)
+			valLines, _ := parseValueLines(msg.Args[k])
+			lines = append(lines, valLines...)
+		}
+		for _, f := range msg.Flags {
+			lines = append(lines, "  "+f)
+		}
+	}
+	lines = append(lines, "")
+	printAbovePrompt(strings.Join(lines, "\r\n"))
+}
+
+// extractTopicArg extracts the value of topic=<value> from a command string.
+func extractTopicArg(cmd string) string {
+	for _, field := range strings.Fields(cmd) {
+		if strings.HasPrefix(field, "topic=") {
+			return strings.TrimPrefix(field, "topic=")
+		}
+	}
+	return ""
+}
+
 func main() {
 
 	fmt.Println("Starting Spore CLI")
@@ -562,6 +603,35 @@ func main() {
 		//
 		if status == "disconnected" {
 			fmt.Println("Not connected")
+			continue
+		}
+
+		// subscribe/unsubscribe — use the client methods so a callback is
+		// registered and incoming publish messages are printed automatically.
+		if strings.HasPrefix(input, "SPORE.topic.subscribe") {
+			topic := extractTopicArg(input)
+			if topic == "" {
+				fmt.Println("usage: SPORE.topic.subscribe topic=<topic>")
+				continue
+			}
+			if err := client.Subscribe(topic, printPublishMessage, defaultTimeoutMs); err != nil {
+				fmt.Println("Subscribe error:", err.Error())
+			} else {
+				fmt.Printf("Subscribed to %s\r\n", topic)
+			}
+			continue
+		}
+		if strings.HasPrefix(input, "SPORE.topic.unsubscribe") {
+			topic := extractTopicArg(input)
+			if topic == "" {
+				fmt.Println("usage: SPORE.topic.unsubscribe topic=<topic>")
+				continue
+			}
+			if err := client.Unsubscribe(topic, defaultTimeoutMs); err != nil {
+				fmt.Println("Unsubscribe error:", err.Error())
+			} else {
+				fmt.Printf("Unsubscribed from %s\r\n", topic)
+			}
 			continue
 		}
 

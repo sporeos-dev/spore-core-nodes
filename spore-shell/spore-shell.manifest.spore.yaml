@@ -4,7 +4,7 @@
 # yaml-language-server: $schema=../../spore-os-protocol/versions/v0d2/spore.manifest.v0.schema.yaml
 
 id: dev.sporeos.shell
-name: Shell
+name: Spore Shell
 description: An interactive shell (REPL) for sending commands to the Spore-OS ecosystem.
 trust: standard
 

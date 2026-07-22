@@ -370,6 +370,10 @@ func parseValueLines(v string) (lines []string, warning string) {
 				return []string{indent + "(empty)"}, ""
 			}
 			for _, item := range splitArgs(inner) {
+				item = strings.TrimSpace(item)
+				if strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"") && len(item) >= 2 {
+					item = item[1 : len(item)-1]
+				}
 				lines = append(lines, indent+"- "+item)
 			}
 			return lines, ""
@@ -388,7 +392,18 @@ func parseValueLines(v string) (lines []string, warning string) {
 				return []string{indent + "(empty)"}, ""
 			}
 			for _, pair := range splitArgs(inner) {
-				lines = append(lines, indent+strings.TrimSpace(pair))
+				pair = strings.TrimSpace(pair)
+				eachIdx := strings.IndexByte(pair, '=')
+				if eachIdx < 0 {
+					lines = append(lines, indent+pair)
+					continue
+				}
+				key := pair[:eachIdx]
+				val := pair[eachIdx+1:]
+				if strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"") && len(val) >= 2 {
+					val = val[1 : len(val)-1]
+				}
+				lines = append(lines, indent+key+": "+val)
 			}
 			return lines, ""
 		}
@@ -450,7 +465,13 @@ func printResponse(resp *spore.Response) {
 		lines = append(lines, subjectLine)
 		lines = append(lines, "  ----------")
 		lines = append(lines, "  code: "+resp.ErrCode)
+		if module, ok := resp.Args["module"]; ok && module != "" {
+			lines = append(lines, "  module: "+module)
+		}
 		lines = append(lines, "  what: "+resp.ErrWhat)
+		if extra, ok := resp.Args["extra"]; ok && extra != "[]" && extra != "" {
+			lines = append(lines, "  extra: "+extra)
+		}
 		if resp.ErrorOrigin != "" {
 			lines = append(lines, "  origin: "+string(resp.ErrorOrigin))
 		}

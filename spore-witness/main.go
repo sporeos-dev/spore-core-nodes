@@ -32,6 +32,9 @@ func main() {
 	client.HandleWitness(func(msg *spore.WitnessMessage) {
 		t := time.UnixMilli(msg.SporeTime).Local().Format("15:04:05.000")
 		color, label := kindMeta(msg.Kind)
+		if msg.Kind == spore.WitnessKindNode && msg.Cast != "" {
+			label = fmt.Sprintf("NOD(%s)", msg.Cast)
+		}
 		body := formatBody(msg)
 		fmt.Printf("%s%s  %s%s  %s\n", color, t, label, colorReset, body)
 	})

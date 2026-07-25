@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -30,13 +29,20 @@ func main() {
 		return
 	}
 
-	// "spawn <id>" subcommand → rewrite as SPORE.spawn passthrough.
-	if args[0] == "spawn" {
+	// "help" subcommand → print usage.
+	if args[0] == "help" {
+		printHelp()
+		return
+	}
+
+	// "open <node-id>" subcommand → run node in the foreground of this terminal.
+	if args[0] == "open" {
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: spore spawn <node-id>")
+			fmt.Fprintln(os.Stderr, "usage: spore open <node-id>")
 			os.Exit(1)
 		}
-		args = append([]string{"SPORE.spawn", "id=" + args[1]}, args[2:]...)
+		runNode(args[1])
+		return
 	}
 
 	cmd := strings.Join(args, " ")
@@ -80,8 +86,24 @@ func main() {
 	}
 }
 
-// runShell queries the hub for the spore-shell app path and execs into it.
+// printHelp prints usage information for the spore tool.
+func printHelp() {
+	fmt.Println()
+	fmt.Println("Usage: spore <subcommand> [args]")
+	fmt.Println()
+	fmt.Println("  open <node-id>   Run a node in the foreground of this terminal")
+	fmt.Println("  help             Show this help")
+	fmt.Println()
+}
+
+// runShell opens spore-shell in the foreground of this terminal.
 func runShell() {
+	runNode("dev.sporeos.shell")
+}
+
+// runNode queries the hub for a node's binary path via SPORE.node.help and
+// replaces this process with that binary, running it in the foreground.
+func runNode(nodeID string) {
 	client := spore.NewClient(appId)
 
 	if err := client.Connect(); err != nil {
@@ -90,7 +112,7 @@ func runShell() {
 	}
 
 	resp, err := client.SendAndWait(
-		fmt.Sprintf("SPORE.node.help node=dev.sporeos.shell ~s%04x", rand.Intn(0x10000)),
+		fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)),
 		defaultTimeoutMs,
 	)
 	if err != nil {
@@ -98,48 +120,23 @@ func runShell() {
 		os.Exit(1)
 	}
 	if !resp.OK {
-		fmt.Fprintln(os.Stderr, "could not resolve spore-shell:", resp.ErrWhat)
+		fmt.Fprintf(os.Stderr, "could not resolve node %q: %s\n", nodeID, resp.ErrWhat)
 		os.Exit(1)
 	}
 
-	// Extract the app path from the nodeinfo JSON.
-	raw, ok := resp.Args["nodeinfo"]
-	if !ok {
-		fmt.Fprintln(os.Stderr, "hub returned no nodeinfo for dev.sporeos.shell")
+	// Extract the binary path from the response.
+	exe, ok := resp.Args["binary"]
+	if !ok || strings.TrimSpace(exe) == "" {
+		fmt.Fprintf(os.Stderr, "hub returned no binary path for %s\n", nodeID)
 		os.Exit(1)
 	}
-
-	var info struct {
-		App  string `json:"app"`
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(raw), &info); err != nil {
-		fmt.Fprintln(os.Stderr, "failed to parse nodeinfo:", err.Error())
-		os.Exit(1)
-	}
-	if info.App == "" {
-		fmt.Fprintln(os.Stderr, "spore-shell has no app path in its manifest")
-		os.Exit(1)
-	}
-
-	// Resolve the app path: expand ~/, resolve relative against manifest dir.
-	exe := info.App
-	if strings.HasPrefix(exe, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cannot resolve home directory:", err.Error())
-			os.Exit(1)
-		}
-		exe = filepath.Join(home, exe[2:])
-	} else if !filepath.IsAbs(exe) && info.Path != "" {
-		exe = filepath.Join(filepath.Dir(info.Path), exe)
-	}
+	exe = strings.TrimSpace(exe)
 
 	// Close the client before exec replaces the process.
 	client.Close()
 
-	// Replace this process with spore-shell.
-	if err := syscall.Exec(exe, []string{"spore-shell"}, os.Environ()); err != nil {
+	// Replace this process with the node binary, running it in the foreground.
+	if err := syscall.Exec(exe, []string{nodeID}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, "exec failed:", err.Error())
 		os.Exit(1)
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"spore-shell/internal/utilities"
 	"strings"
@@ -83,6 +84,138 @@ func redrawInputLine() {
 	if back > 0 {
 		fmt.Printf("\033[%dD", back)
 	}
+}
+
+// pathCompletion holds the result of a tab-completion analysis.
+type pathCompletion struct {
+	matches   []string // filesystem entries that match (full paths, dirs end with /)
+	insertAt  int      // rune index in inputBuf where the path value starts
+	pathSoFar string   // the path fragment the user has typed so far
+}
+
+// findPathCompletion inspects the input buffer up to the cursor. If the cursor
+// is inside a token whose value portion starts with /, ~/, or ./ it performs a
+// filesystem lookup and returns the matches. Returns nil otherwise.
+//
+// It handles both plain values (path=/Users/mh/...) and quoted values
+// (path="/Users/mh/...) and preserves the ~ prefix in results when the user
+// typed a tilde path.
+func findPathCompletion(buf []rune, cursor int) *pathCompletion {
+	left := buf[:cursor]
+
+	// Find the rune index where the current token starts (scan back to the
+	// last unquoted space, or the beginning of the buffer).
+	tokenStart := 0
+	for i := cursor - 1; i >= 0; i-- {
+		if left[i] == ' ' {
+			tokenStart = i + 1
+			break
+		}
+	}
+	token := left[tokenStart:]
+
+	// Skip past '=' if present (key=value syntax).
+	valueStart := 0
+	for i, ch := range token {
+		if ch == '=' {
+			valueStart = i + 1
+			break
+		}
+	}
+	// Skip a leading quote character.
+	if valueStart < len(token) && (token[valueStart] == '"' || token[valueStart] == '\'') {
+		valueStart++
+	}
+
+	pathValue := string(token[valueStart:])
+
+	// Only complete when the value looks like a filesystem path.
+	if !strings.HasPrefix(pathValue, "/") &&
+		!strings.HasPrefix(pathValue, "~/") &&
+		!strings.HasPrefix(pathValue, "./") &&
+		pathValue != "~" {
+		return nil
+	}
+
+	// Expand ~ for the filesystem lookup.
+	lookupPath := pathValue
+	usesTilde := strings.HasPrefix(pathValue, "~")
+	if usesTilde {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		if pathValue == "~" {
+			// Bare ~ — treat as ~/  so we list the home directory's contents.
+			lookupPath = home + "/"
+		} else {
+			// ~/... — replace the ~ with the real home path.
+			lookupPath = home + pathValue[1:]
+		}
+	}
+
+	// Split the lookup path into directory + name prefix.
+	var dir, namePrefix string
+	if strings.HasSuffix(lookupPath, "/") {
+		dir = lookupPath
+		namePrefix = ""
+	} else {
+		dir = filepath.Dir(lookupPath)
+		namePrefix = filepath.Base(lookupPath)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	home, _ := os.UserHomeDir()
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if namePrefix != "" && !strings.HasPrefix(name, namePrefix) {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+		if e.IsDir() {
+			fullPath += "/"
+		}
+		// Restore the ~ prefix if the user typed a tilde path.
+		if usesTilde && home != "" {
+			stripped := strings.TrimSuffix(fullPath, "/")
+			if stripped == home {
+				fullPath = "~/"
+			} else if strings.HasPrefix(fullPath, home+"/") {
+				rel := fullPath[len(home)+1:]
+				fullPath = "~/" + rel
+			}
+		}
+		matches = append(matches, fullPath)
+	}
+
+	return &pathCompletion{
+		matches:   matches,
+		insertAt:  tokenStart + valueStart,
+		pathSoFar: pathValue,
+	}
+}
+
+// longestCommonPrefix returns the longest string that is a prefix of every
+// element in strs. Returns "" for an empty slice.
+func longestCommonPrefix(strs []string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	prefix := strs[0]
+	for _, s := range strs[1:] {
+		for !strings.HasPrefix(s, prefix) {
+			prefix = prefix[:len(prefix)-1]
+			if prefix == "" {
+				return ""
+			}
+		}
+	}
+	return prefix
 }
 
 // readLine puts the terminal into raw mode and reads a single line of input,
@@ -225,6 +358,44 @@ func readLine(prompt string) (string, error) {
 			fmt.Print("^C\r\n")
 			outputMutex.Unlock()
 			return "", errInterrupt
+
+		case 0x09: // Tab — path completion.
+			// Analyse the buffer while the mutex is still held (no mutex calls
+			// inside findPathCompletion), then release it so printAbovePrompt
+			// can acquire it safely when we need to display multiple matches.
+			comp := findPathCompletion(inputBuf, inputCursor)
+			outputMutex.Unlock()
+
+			var newPath string // the completion string to insert (empty = nothing to do)
+			if comp != nil && len(comp.matches) > 0 {
+				if len(comp.matches) == 1 {
+					// Unambiguous match — insert it directly.
+					newPath = comp.matches[0]
+				} else {
+					// Multiple matches — display them above the prompt and fill
+					// the longest common prefix so the user can keep typing.
+					matchLines := strings.Join(comp.matches, "\r\n  ")
+					printAbovePrompt("  " + matchLines)
+					lcp := longestCommonPrefix(comp.matches)
+					if len(lcp) > len(comp.pathSoFar) {
+						newPath = lcp
+					}
+				}
+			}
+
+			// Re-acquire the mutex before touching shared input state.
+			outputMutex.Lock()
+			if newPath != "" {
+				completion := []rune(newPath)
+				// Replace the old path fragment (from insertAt to cursor) with
+				// the completion, preserving any text that follows the cursor.
+				before := append([]rune{}, inputBuf[:comp.insertAt]...)
+				after := append([]rune{}, inputBuf[inputCursor:]...)
+				inputBuf = append(before, append(completion, after...)...)
+				inputCursor = comp.insertAt + len(completion)
+				redrawInputLine()
+			}
+			// Fall through to outputMutex.Unlock() after the switch.
 
 		default:
 			if b[0] >= 0x20 { // Printable ASCII — insert at cursor position.

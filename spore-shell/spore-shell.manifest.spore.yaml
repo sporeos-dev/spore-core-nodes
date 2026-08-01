@@ -14,3 +14,4 @@ app: ./spore-shell
 
 api: []
 topics: []
+permissions: []

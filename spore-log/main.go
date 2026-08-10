@@ -9,12 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	spore "github.com/sporeos-dev/spore-client-libs/go"
+	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/witness"
 )
 
 const appId = "dev.sporeos.log"
@@ -117,12 +118,17 @@ func main() {
 	}
 	defer logger.close()
 
-	client := spore.NewClient(appId)
+	client, err := spore.New(appId)
+	if err != nil {
+		log.Fatalf("spore-log: %v", err)
+	}
 
-	client.HandleWitness(func(msg *spore.WitnessMessage) {
-		t := time.UnixMilli(msg.SporeTime).UTC().Format("2006-01-02T15:04:05.000Z")
-		kind := kindLabel(msg.Kind)
-		body := formatBody(msg)
+	client.OnWitness(func(w *witness.Witness) {
+		sporeTimeStr := w.ArgIf("spore_time", "0")
+		sporeTimeMs, _ := strconv.ParseInt(sporeTimeStr, 10, 64)
+		t := time.UnixMilli(sporeTimeMs).UTC().Format("2006-01-02T15:04:05.000Z")
+		kind := kindLabel(w)
+		body := w.Body()
 		line := fmt.Sprintf("%s  %s  %s", t, kind, body)
 		if err := logger.writeLine(line); err != nil {
 			log.Println("spore-log: write error:", err)
@@ -132,7 +138,7 @@ func main() {
 	if err := client.Connect(); err != nil {
 		log.Fatal("spore-log: connect:", err)
 	}
-	defer client.Close()
+	defer client.Disconnect()
 
 	log.Printf("spore-log: connected, writing to %s", logPath)
 
@@ -143,108 +149,22 @@ func main() {
 	}
 }
 
-// kindLabel returns a fixed-width label for the witness kind.
-func kindLabel(kind spore.WitnessKind) string {
-	switch kind {
-	case spore.WitnessKindIncoming:
+// kindLabel returns a fixed-width label for a witness kind.
+func kindLabel(w *witness.Witness) string {
+	switch {
+	case w.Flag("spore_incoming"):
 		return "IN "
-	case spore.WitnessKindOutgoing:
+	case w.Flag("spore_outgoing"):
 		return "OUT"
-	case spore.WitnessKindExpanded:
+	case w.Flag("spore_expanded"):
 		return "EXP"
-	case spore.WitnessKindEvent:
+	case w.Flag("spore_event"):
 		return "EVT"
-	case spore.WitnessKindNode:
+	case w.Flag("spore_node"):
 		return "NOD"
 	default:
 		return "???"
 	}
 }
 
-// formatBody reconstructs a wire-like string from a WitnessMessage.
-func formatBody(msg *spore.WitnessMessage) string {
-	if msg.IsResponse {
-		return formatResponseBody(msg)
-	}
-	return formatCallBody(msg)
-}
 
-// formatCallBody reconstructs a call-type witness body: subject [args] [flags] [~handle]
-func formatCallBody(msg *spore.WitnessMessage) string {
-	var parts []string
-	parts = append(parts, msg.Subject)
-	if msg.Cast != "" {
-		parts = append(parts, "cast="+msg.Cast)
-	}
-	for _, k := range sortedKeys(msg.Args) {
-		parts = append(parts, formatKV(k, msg.Args[k]))
-	}
-	parts = append(parts, sortedFlags(msg.Flags)...)
-	if msg.Handle != "" {
-		parts = append(parts, "~"+msg.Handle)
-	}
-	return strings.Join(parts, " ")
-}
-
-// formatResponseBody reconstructs a response-type witness body: ~handle:subject status [fields]
-func formatResponseBody(msg *spore.WitnessMessage) string {
-	var parts []string
-
-	head := msg.Subject
-	if msg.Handle != "" {
-		head = "~" + msg.Handle + ":" + msg.Subject
-	}
-	parts = append(parts, head)
-
-	switch {
-	case msg.OK:
-		parts = append(parts, "ok")
-	case msg.Cancelled:
-		parts = append(parts, "cancelled")
-	case msg.CustomError:
-		parts = append(parts, "custom_error")
-	default:
-		parts = append(parts, "error")
-	}
-
-	if msg.Capture != "" {
-		parts = append(parts, "capture="+msg.Capture)
-	}
-	if msg.ErrCode != "" {
-		parts = append(parts, "code="+msg.ErrCode)
-	}
-	if msg.ErrWhat != "" {
-		parts = append(parts, formatKV("what", msg.ErrWhat))
-	}
-	for _, k := range sortedKeys(msg.Args) {
-		parts = append(parts, formatKV(k, msg.Args[k]))
-	}
-	parts = append(parts, sortedFlags(msg.Flags)...)
-	return strings.Join(parts, " ")
-}
-
-// formatKV formats a key=value pair, quoting the value if it contains spaces.
-func formatKV(k, v string) string {
-	if strings.ContainsAny(v, " \t") {
-		return k + `="` + v + `"`
-	}
-	return k + "=" + v
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedFlags(m map[string]bool) []string {
-	flags := make([]string, 0, len(m))
-	for f := range m {
-		flags = append(flags, f)
-	}
-	sort.Strings(flags)
-	return flags
-}

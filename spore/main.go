@@ -12,7 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	spore "github.com/sporeos-dev/spore-client-libs/go"
+	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/response"
 )
 
 const appId = "dev.sporeos.spore"
@@ -65,23 +66,27 @@ func main() {
 		cmd = cmd + fmt.Sprintf(" ~s%04x", rand.Intn(0x10000))
 	}
 
-	client := spore.NewClient(appId)
+	client, err := spore.New(appId)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to create client:", err.Error())
+		os.Exit(1)
+	}
 
 	if err := client.Connect(); err != nil {
 		fmt.Fprintln(os.Stderr, "connection failed:", err.Error())
 		os.Exit(1)
 	}
-	defer client.Close()
+	defer client.Disconnect()
 
-	resp, err := client.SendAndWait(cmd, defaultTimeoutMs)
+	resp, rerr, err := client.SendRawAndWait(cmd, defaultTimeoutMs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err.Error())
 		os.Exit(1)
 	}
 
-	printResponse(resp)
+	printResponse(resp, rerr)
 
-	if !resp.OK && !resp.Cancelled {
+	if rerr != nil {
 		os.Exit(1)
 	}
 }
@@ -104,14 +109,18 @@ func runShell() {
 // runNode queries the hub for a node's binary path via SPORE.node.help and
 // replaces this process with that binary, running it in the foreground.
 func runNode(nodeID string) {
-	client := spore.NewClient(appId)
+	client, err := spore.New(appId)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to create client:", err.Error())
+		os.Exit(1)
+	}
 
 	if err := client.Connect(); err != nil {
 		fmt.Fprintln(os.Stderr, "connection failed:", err.Error())
 		os.Exit(1)
 	}
 
-	resp, err := client.SendAndWait(
+	resp, rerr, err := client.SendRawAndWait(
 		fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)),
 		defaultTimeoutMs,
 	)
@@ -119,23 +128,20 @@ func runNode(nodeID string) {
 		fmt.Fprintln(os.Stderr, "error:", err.Error())
 		os.Exit(1)
 	}
-	if !resp.OK {
-		fmt.Fprintf(os.Stderr, "could not resolve node %q: %s\n", nodeID, resp.ErrWhat)
+	if rerr != nil {
+		fmt.Fprintf(os.Stderr, "could not resolve node %q: %s\n", nodeID, rerr.What())
 		os.Exit(1)
 	}
 
-	// Extract the binary path from the response.
-	exe, ok := resp.Args["binary"]
+	exe, ok := resp.Arg("binary")
 	if !ok || strings.TrimSpace(exe) == "" {
 		fmt.Fprintf(os.Stderr, "hub returned no binary path for %s\n", nodeID)
 		os.Exit(1)
 	}
 	exe = strings.TrimSpace(exe)
 
-	// Close the client before exec replaces the process.
-	client.Close()
+	client.Disconnect()
 
-	// Replace this process with the node binary, running it in the foreground.
 	if err := syscall.Exec(exe, []string{nodeID}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, "exec failed:", err.Error())
 		os.Exit(1)
@@ -143,51 +149,145 @@ func runNode(nodeID string) {
 }
 
 // printResponse writes a formatted response to stdout.
-func printResponse(resp *spore.Response) {
-	handle := ""
-	if resp.Handle != "" {
-		handle = " ~" + resp.Handle
+func printResponse(resp *response.Response, rerr *response.ResponseError) {
+	var handle, subject, capture string
+
+	if rerr != nil {
+		handle = rerr.Handle()
+		subject = rerr.Command()
+		capture = rerr.ArgIf("capture", "")
+	} else if resp != nil {
+		handle = resp.Handle()
+		subject = resp.Command()
+		capture = resp.ArgIf("capture", "")
+	}
+
+	handleStr := ""
+	if handle != "" {
+		handleStr = " ~" + handle
 	}
 
 	fmt.Println()
 	switch {
-	case resp.OK:
-		fmt.Printf("[ok]%s\n", handle)
-		fmt.Printf("%s // %s\n", resp.Subject, resp.Capture)
-		if len(resp.Args) > 0 {
+	case rerr != nil:
+		errKind := "error"
+		if rerr.Flag("custom_error") {
+			errKind = "custom_error"
+		}
+		origin := ""
+		switch {
+		case rerr.Flag("node_error"):
+			origin = "node_error"
+		case rerr.Flag("spore_error"):
+			origin = "spore_error"
+		case rerr.Flag("cast_error"):
+			origin = "cast_error"
+		case rerr.Flag("capture_error"):
+			origin = "capture_error"
+		}
+		fmt.Fprintf(os.Stderr, "[%s]%s\n", errKind, handleStr)
+		fmt.Fprintf(os.Stderr, "%s // %s\n", subject, capture)
+		fmt.Fprintln(os.Stderr, "----------")
+		fmt.Fprintln(os.Stderr, "code:", rerr.Code())
+		fmt.Fprintln(os.Stderr, "what:", rerr.What())
+		if origin != "" {
+			fmt.Fprintln(os.Stderr, "origin:", origin)
+		}
+
+	case resp != nil && resp.Flag("ok"):
+		fmt.Printf("[ok]%s\n", handleStr)
+		fmt.Printf("%s // %s\n", subject, capture)
+		args := parseRespArgs(resp)
+		if len(args) > 0 {
 			fmt.Println("----------")
-			keys := make([]string, 0, len(resp.Args))
-			for k := range resp.Args {
+			keys := make([]string, 0, len(args))
+			for k := range args {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
 				fmt.Println(k)
-				for _, line := range parseValueLines(resp.Args[k]) {
+				for _, line := range parseValueLines(args[k]) {
 					fmt.Println(line)
 				}
 			}
 		}
 
-	case resp.Cancelled:
-		fmt.Printf("[cancelled]%s\n", handle)
-		fmt.Printf("%s // %s\n", resp.Subject, resp.Capture)
-
-	default:
-		errKind := "error"
-		if resp.CustomError {
-			errKind = "custom_error"
-		}
-		fmt.Fprintf(os.Stderr, "[%s]%s\n", errKind, handle)
-		fmt.Fprintf(os.Stderr, "%s // %s\n", resp.Subject, resp.Capture)
-		fmt.Fprintln(os.Stderr, "----------")
-		fmt.Fprintln(os.Stderr, "code:", resp.ErrCode)
-		fmt.Fprintln(os.Stderr, "what:", resp.ErrWhat)
-		if resp.ErrorOrigin != "" {
-			fmt.Fprintln(os.Stderr, "origin:", string(resp.ErrorOrigin))
-		}
+	case resp != nil && resp.Flag("cancelled"):
+		fmt.Printf("[cancelled]%s\n", handleStr)
+		fmt.Printf("%s // %s\n", subject, capture)
 	}
 	fmt.Println()
+}
+
+// parseRespArgs extracts all non-reserved key=value pairs from a serialized response.
+func parseRespArgs(resp *response.Response) map[string]string {
+	raw := resp.Serialize()
+	fields := splitFields(raw)
+	args := make(map[string]string)
+	skipArgs := map[string]bool{"capture": true, "code": true, "what": true}
+	skipFlags := map[string]bool{
+		"ok": true, "cancelled": true, "error": true, "custom_error": true,
+		"node_error": true, "spore_error": true, "cast_error": true, "capture_error": true,
+	}
+	for _, f := range fields[1:] { // skip the ~handle:command token
+		if strings.Contains(f, "=") {
+			kv := strings.SplitN(f, "=", 2)
+			if skipArgs[kv[0]] {
+				continue
+			}
+			v := kv[1]
+			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+				v = v[1 : len(v)-1]
+			}
+			args[kv[0]] = v
+		} else if skipFlags[f] || strings.HasPrefix(f, "~") {
+			continue
+		}
+	}
+	return args
+}
+
+// splitFields splits a Spore wire string by spaces, respecting quoted strings
+// and nested [array] / {object} tokens.
+func splitFields(s string) []string {
+	var fields []string
+	var current strings.Builder
+	inDouble := false
+	depth := 0
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch == '"' && !inDouble:
+			inDouble = true
+			current.WriteByte(ch)
+		case ch == '\\' && inDouble && i+1 < len(s):
+			current.WriteByte(ch)
+			current.WriteByte(s[i+1])
+			i++
+		case ch == '"' && inDouble:
+			inDouble = false
+			current.WriteByte(ch)
+		case (ch == '[' || ch == '{') && !inDouble:
+			depth++
+			current.WriteByte(ch)
+		case (ch == ']' || ch == '}') && !inDouble:
+			depth--
+			current.WriteByte(ch)
+		case ch == ' ' && !inDouble && depth == 0:
+			if current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	return fields
 }
 
 // parseValueLines returns indented display lines for a response arg value.

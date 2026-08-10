@@ -14,8 +14,11 @@ import (
 	"spore-shell/internal/utilities"
 	"strings"
 	"sync"
+	"sync/atomic"
 
-	spore "github.com/sporeos-dev/spore-client-libs/go"
+	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/publish"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/response"
 	"golang.org/x/term"
 )
 
@@ -43,6 +46,9 @@ var inputCursor int
 
 // history stores previously entered non-empty commands.
 var history []string
+
+// handleCounter generates unique handle tokens for subscribe/unsubscribe requests.
+var handleCounter atomic.Int64
 
 // printAbovePrompt clears the current input line, prints a message on its own
 // line, then redraws the prompt and any partially-typed input so the user can
@@ -590,27 +596,73 @@ func parseValueLines(v string) (lines []string, warning string) {
 
 // printResponse formats and prints a spore Response above the current prompt.
 // Lines are joined with \r\n so they render correctly in raw terminal mode.
-func printResponse(resp *spore.Response) {
+func printResponse(resp *response.Response, rerr *response.ResponseError) {
 	lines := []string{""}
 
-	handle := ""
-	if resp.Handle != "" {
-		handle = " ~" + resp.Handle
+	var handle, subject, capture string
+	if rerr != nil {
+		handle = rerr.Handle()
+		subject = rerr.Command()
+		capture = rerr.ArgIf("capture", "")
+	} else if resp != nil {
+		handle = resp.Handle()
+		subject = resp.Command()
+		capture = resp.ArgIf("capture", "")
 	}
 
-	// Second line: subject // capture
-	subjectLine := "  " + resp.Subject + " // " + resp.Capture
+	handleStr := ""
+	if handle != "" {
+		handleStr = " ~" + handle
+	}
+	subjectLine := "  " + subject + " // " + capture
 
 	switch {
-	case resp.OK:
-		lines = append(lines, "  [ok]"+handle)
+	case rerr != nil:
+		errKind := "error"
+		if rerr.Flag("custom_error") {
+			errKind = "custom_error"
+		}
+		origin := ""
+		switch {
+		case rerr.Flag("node_error"):
+			origin = "node_error"
+		case rerr.Flag("spore_error"):
+			origin = "spore_error"
+		case rerr.Flag("cast_error"):
+			origin = "cast_error"
+		case rerr.Flag("capture_error"):
+			origin = "capture_error"
+		}
+		lines = append(lines, "  ["+errKind+"]"+handleStr)
 		lines = append(lines, subjectLine)
-		if len(resp.Args) > 0 {
+		lines = append(lines, "  ----------")
+		lines = append(lines, "  code: "+rerr.Code())
+		if module := rerr.ArgIf("module", ""); module != "" {
+			lines = append(lines, "  module: "+module)
+		}
+		lines = append(lines, "  what: "+rerr.What())
+		if extra := rerr.ArgIf("extra", ""); extra != "" && extra != "[]" {
+			lines = append(lines, "  extra: "+extra)
+		}
+		if origin != "" {
+			lines = append(lines, "  origin: "+origin)
+		}
+
+	case resp != nil && resp.Flag("ok"):
+		lines = append(lines, "  [ok]"+handleStr)
+		lines = append(lines, subjectLine)
+		args := parseRespArgs(resp)
+		if len(args) > 0 {
 			lines = append(lines, "  ----------")
 			var warnings []string
-			for k, v := range resp.Args {
+			keys := make([]string, 0, len(args))
+			for k := range args {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
 				lines = append(lines, "  "+k)
-				valLines, warn := parseValueLines(v)
+				valLines, warn := parseValueLines(args[k])
 				lines = append(lines, valLines...)
 				if warn != "" {
 					warnings = append(warnings, "  "+k+": "+warn)
@@ -623,57 +675,134 @@ func printResponse(resp *spore.Response) {
 			}
 		}
 
-	case resp.Cancelled:
-		lines = append(lines, "  [cancelled]"+handle)
+	case resp != nil && resp.Flag("cancelled"):
+		lines = append(lines, "  [cancelled]"+handleStr)
 		lines = append(lines, subjectLine)
-
-	default: // error or custom_error
-		errKind := "error"
-		if resp.CustomError {
-			errKind = "custom_error"
-		}
-		lines = append(lines, "  ["+errKind+"]"+handle)
-		lines = append(lines, subjectLine)
-		lines = append(lines, "  ----------")
-		lines = append(lines, "  code: "+resp.ErrCode)
-		if module, ok := resp.Args["module"]; ok && module != "" {
-			lines = append(lines, "  module: "+module)
-		}
-		lines = append(lines, "  what: "+resp.ErrWhat)
-		if extra, ok := resp.Args["extra"]; ok && extra != "[]" && extra != "" {
-			lines = append(lines, "  extra: "+extra)
-		}
-		if resp.ErrorOrigin != "" {
-			lines = append(lines, "  origin: "+string(resp.ErrorOrigin))
-		}
 	}
 
 	lines = append(lines, "")
-
 	printAbovePrompt(strings.Join(lines, "\r\n"))
+}
+
+// parseRespArgs extracts all non-reserved key=value pairs from a serialized response.
+func parseRespArgs(resp *response.Response) map[string]string {
+	raw := resp.Serialize()
+	fields := splitFields(raw)
+	args := make(map[string]string)
+	skipArgs := map[string]bool{"capture": true, "code": true, "what": true}
+	skipFlags := map[string]bool{
+		"ok": true, "cancelled": true, "error": true, "custom_error": true,
+		"node_error": true, "spore_error": true, "cast_error": true, "capture_error": true,
+	}
+	for _, f := range fields[1:] { // skip the ~handle:command token
+		if strings.Contains(f, "=") {
+			kv := strings.SplitN(f, "=", 2)
+			if skipArgs[kv[0]] {
+				continue
+			}
+			v := kv[1]
+			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+				v = v[1 : len(v)-1]
+			}
+			args[kv[0]] = v
+		} else if skipFlags[f] || strings.HasPrefix(f, "~") {
+			continue
+		}
+	}
+	return args
+}
+
+// splitFields splits a Spore wire string by spaces, respecting quoted strings
+// and nested [array] / {object} tokens.
+func splitFields(s string) []string {
+	var fields []string
+	var current strings.Builder
+	inDouble := false
+	depth := 0
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch == '"' && !inDouble:
+			inDouble = true
+			current.WriteByte(ch)
+		case ch == '\\' && inDouble && i+1 < len(s):
+			current.WriteByte(ch)
+			current.WriteByte(s[i+1])
+			i++
+		case ch == '"' && inDouble:
+			inDouble = false
+			current.WriteByte(ch)
+		case (ch == '[' || ch == '{') && !inDouble:
+			depth++
+			current.WriteByte(ch)
+		case (ch == ']' || ch == '}') && !inDouble:
+			depth--
+			current.WriteByte(ch)
+		case ch == ' ' && !inDouble && depth == 0:
+			if current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	return fields
+}
+
+// parsePublishData extracts args (excluding cast) and flags from a publish message.
+func parsePublishData(p *publish.Publish) (map[string]string, []string) {
+	raw := p.Serialize()
+	fields := splitFields(raw)
+	args := make(map[string]string)
+	var flags []string
+	// fields[0]="publish", fields[1]=topic, rest is content
+	for _, f := range fields[2:] {
+		if strings.Contains(f, "=") {
+			kv := strings.SplitN(f, "=", 2)
+			if kv[0] == "cast" {
+				continue
+			}
+			v := kv[1]
+			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+				v = v[1 : len(v)-1]
+			}
+			args[kv[0]] = v
+		} else {
+			flags = append(flags, f)
+		}
+	}
+	return args, flags
 }
 
 // printPublishMessage formats an incoming pub/sub message and prints it above
 // the current prompt, just like a regular response.
-func printPublishMessage(msg *spore.PublishMessage) {
+func printPublishMessage(p *publish.Publish) {
 	lines := []string{""}
-	lines = append(lines, "  [publish] "+msg.Topic)
-	if msg.Cast != "" {
-		lines = append(lines, "  cast: "+msg.Cast)
+	topic := p.Topic()
+	cast := p.ArgIf("cast", "")
+	lines = append(lines, "  [publish] "+topic)
+	if cast != "" {
+		lines = append(lines, "  cast: "+cast)
 	}
-	if len(msg.Args) > 0 || len(msg.Flags) > 0 {
+	args, flags := parsePublishData(p)
+	if len(args) > 0 || len(flags) > 0 {
 		lines = append(lines, "  ----------")
-		keys := make([]string, 0, len(msg.Args))
-		for k := range msg.Args {
+		keys := make([]string, 0, len(args))
+		for k := range args {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
 			lines = append(lines, "  "+k)
-			valLines, _ := parseValueLines(msg.Args[k])
+			valLines, _ := parseValueLines(args[k])
 			lines = append(lines, valLines...)
 		}
-		for _, f := range msg.Flags {
+		for _, f := range flags {
 			lines = append(lines, "  "+f)
 		}
 	}
@@ -696,19 +825,26 @@ func main() {
 	fmt.Println("Starting Spore CLI")
 	fmt.Println("Type (h)elp for list of commands.")
 
-	client := spore.NewClient(appId)
+	client, err := spore.New(appId)
+	if err != nil {
+		fmt.Println("Failed to create client:", err.Error())
+		return
+	}
 
 	// // When the hub routes cli.echo back to us, print the received expression
 	// // and send the reply.
-	// client.HandleRequest("echo", func(call *spore.Call) {
-	// 	expression := call.ArgIf("expression", "")
+	// client.OnRequest(func(r *request.Request) {
+	// 	expression := r.ArgIf("expression", "")
 	// 	printAbovePrompt("[echo received: " + expression + "]")
-	// 	call.Reply(map[string]string{"echo": expression})
+	// 	// client.SendResponse(response.New(r.Command(), r.Handle()).WithArg("echo", expression))
 	// })
 
-	// Print all responses that don't match a specific HandleResponse subject.
-	client.HandleResponseFallback(func(resp *spore.Response) {
-		printResponse(resp)
+	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
+		printResponse(resp, rerr)
+	})
+
+	client.OnPublish(func(p *publish.Publish) {
+		printPublishMessage(p)
 	})
 
 	status := "disconnected"
@@ -781,7 +917,7 @@ func main() {
 				fmt.Println("Not connected")
 				continue
 			}
-			client.Close()
+			client.Disconnect()
 			status = "disconnected"
 			continue
 
@@ -806,8 +942,11 @@ func main() {
 				fmt.Println("usage: SPORE.topic.subscribe topic=<topic>")
 				continue
 			}
-			if err := client.Subscribe(topic, printPublishMessage, defaultTimeoutMs); err != nil {
+			raw := fmt.Sprintf("SPORE.topic.subscribe topic=%s ~sub%d", topic, handleCounter.Add(1))
+			if _, rerr, err := client.SendRawAndWait(raw, defaultTimeoutMs); err != nil {
 				fmt.Println("Subscribe error:", err.Error())
+			} else if rerr != nil {
+				fmt.Println("Subscribe error:", rerr.What())
 			} else {
 				fmt.Printf("Subscribed to %s\r\n", topic)
 			}
@@ -819,8 +958,11 @@ func main() {
 				fmt.Println("usage: SPORE.topic.unsubscribe topic=<topic>")
 				continue
 			}
-			if err := client.Unsubscribe(topic, defaultTimeoutMs); err != nil {
+			raw := fmt.Sprintf("SPORE.topic.unsubscribe topic=%s ~unsub%d", topic, handleCounter.Add(1))
+			if _, rerr, err := client.SendRawAndWait(raw, defaultTimeoutMs); err != nil {
 				fmt.Println("Unsubscribe error:", err.Error())
+			} else if rerr != nil {
+				fmt.Println("Unsubscribe error:", rerr.What())
 			} else {
 				fmt.Printf("Unsubscribed from %s\r\n", topic)
 			}
@@ -831,7 +973,7 @@ func main() {
 			input = utilities.AppendHandle(input)
 		}
 
-		if err := client.Send(input); err != nil {
+		if err := client.SendRaw(input); err != nil {
 			fmt.Println("Send error:", err.Error())
 		}
 	}
@@ -840,6 +982,6 @@ func main() {
 	// closing
 	// application
 	//
-	client.Close()
+	client.Disconnect()
 	fmt.Println("Exit complete")
 }

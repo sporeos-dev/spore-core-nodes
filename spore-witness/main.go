@@ -6,11 +6,12 @@ package main
 import (
 	"fmt"
 	"log"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	spore "github.com/sporeos-dev/spore-client-libs/go"
+	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/witness"
 )
 
 const appId = "dev.sporeos.witness"
@@ -27,22 +28,27 @@ const (
 )
 
 func main() {
-	client := spore.NewClient(appId)
+	client, err := spore.New(appId)
+	if err != nil {
+		log.Fatal("create client:", err)
+	}
 
-	client.HandleWitness(func(msg *spore.WitnessMessage) {
-		t := time.UnixMilli(msg.SporeTime).Local().Format("15:04:05.000")
-		color, label := kindMeta(msg.Kind)
-		if msg.Kind == spore.WitnessKindNode && msg.Cast != "" {
-			label = fmt.Sprintf("NOD(%s)", msg.Cast)
+	client.OnWitness(func(w *witness.Witness) {
+		sporeTimeStr := w.ArgIf("spore_time", "0")
+		sporeTimeMs, _ := strconv.ParseInt(sporeTimeStr, 10, 64)
+		t := time.UnixMilli(sporeTimeMs).Local().Format("15:04:05.000")
+		color, label := kindMeta(w)
+		if w.Flag("spore_node") && w.ArgIf("cast", "") != "" {
+			label = fmt.Sprintf("NOD(%s)", w.ArgIf("cast", ""))
 		}
-		body := formatBody(msg)
+		body := w.Body()
 		fmt.Printf("%s%s  %s%s  %s\n", color, t, label, colorReset, body)
 	})
 
 	if err := client.Connect(); err != nil {
 		log.Fatal("connect:", err)
 	}
-	defer client.Close()
+	defer client.Disconnect()
 
 	fmt.Println("spore-witness: connected, watching hub traffic...")
 
@@ -53,7 +59,7 @@ func main() {
 			}
 			fmt.Println("spore-witness: disconnected, reconnecting...")
 		}
-		client.Close()
+		client.Disconnect()
 
 		for {
 			time.Sleep(5 * time.Second)
@@ -68,122 +74,19 @@ func main() {
 }
 
 // kindMeta returns the ANSI color and short label for a witness kind.
-func kindMeta(kind spore.WitnessKind) (string, string) {
-	switch kind {
-	case spore.WitnessKindIncoming:
+func kindMeta(w *witness.Witness) (string, string) {
+	switch {
+	case w.Flag("spore_incoming"):
 		return colorCyan, "IN "
-	case spore.WitnessKindOutgoing:
+	case w.Flag("spore_outgoing"):
 		return colorGreen, "OUT"
-	case spore.WitnessKindExpanded:
+	case w.Flag("spore_expanded"):
 		return colorBlue, "EXP"
-	case spore.WitnessKindEvent:
+	case w.Flag("spore_event"):
 		return colorRed, "EVT"
-	case spore.WitnessKindNode:
+	case w.Flag("spore_node"):
 		return colorMagenta, "NOD"
 	default:
 		return colorReset, "???"
 	}
-}
-
-// formatBody reconstructs a wire-like string from a WitnessMessage.
-func formatBody(msg *spore.WitnessMessage) string {
-	// Hub events and node-emitted witness messages are structured with Subject + Args + Flags
-	if msg.Kind == spore.WitnessKindEvent || msg.Kind == spore.WitnessKindNode {
-		return formatDiagnosticBody(msg)
-	}
-	if msg.IsResponse {
-		return formatResponseBody(msg)
-	}
-	return formatCallBody(msg)
-}
-
-// formatDiagnosticBody reconstructs event and node-emitted messages from Subject, Args, and Flags.
-func formatDiagnosticBody(msg *spore.WitnessMessage) string {
-	var parts []string
-	parts = append(parts, msg.Subject)
-	for _, k := range sortedKeys(msg.Args) {
-		parts = append(parts, formatKV(k, msg.Args[k]))
-	}
-	parts = append(parts, sortedFlags(msg.Flags)...)
-	return strings.Join(parts, " ")
-}
-
-// formatCallBody reconstructs a call-type witness body: subject [args] [flags] [~handle]
-func formatCallBody(msg *spore.WitnessMessage) string {
-	var parts []string
-	parts = append(parts, msg.Subject)
-	if msg.Cast != "" {
-		parts = append(parts, "cast="+msg.Cast)
-	}
-	for _, k := range sortedKeys(msg.Args) {
-		parts = append(parts, formatKV(k, msg.Args[k]))
-	}
-	parts = append(parts, sortedFlags(msg.Flags)...)
-	if msg.Handle != "" {
-		parts = append(parts, "~"+msg.Handle)
-	}
-	return strings.Join(parts, " ")
-}
-
-// formatResponseBody reconstructs a response-type witness body: ~handle:subject status [fields]
-func formatResponseBody(msg *spore.WitnessMessage) string {
-	var parts []string
-
-	head := msg.Subject
-	if msg.Handle != "" {
-		head = "~" + msg.Handle + ":" + msg.Subject
-	}
-	parts = append(parts, head)
-
-	switch {
-	case msg.OK:
-		parts = append(parts, "ok")
-	case msg.Cancelled:
-		parts = append(parts, "cancelled")
-	case msg.CustomError:
-		parts = append(parts, "custom_error")
-	default:
-		parts = append(parts, "error")
-	}
-
-	if msg.Capture != "" {
-		parts = append(parts, "capture="+msg.Capture)
-	}
-	if msg.ErrCode != "" {
-		parts = append(parts, "code="+msg.ErrCode)
-	}
-	if msg.ErrWhat != "" {
-		parts = append(parts, formatKV("what", msg.ErrWhat))
-	}
-	for _, k := range sortedKeys(msg.Args) {
-		parts = append(parts, formatKV(k, msg.Args[k]))
-	}
-	parts = append(parts, sortedFlags(msg.Flags)...)
-	return strings.Join(parts, " ")
-}
-
-// formatKV formats a key=value pair, quoting the value if it contains spaces.
-func formatKV(k, v string) string {
-	if strings.ContainsAny(v, " \t") {
-		return k + `="` + v + `"`
-	}
-	return k + "=" + v
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedFlags(m map[string]bool) []string {
-	flags := make([]string, 0, len(m))
-	for f := range m {
-		flags = append(flags, f)
-	}
-	sort.Strings(flags)
-	return flags
 }

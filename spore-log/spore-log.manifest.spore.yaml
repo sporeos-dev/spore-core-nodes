@@ -13,7 +13,7 @@ version: 0.2.0
 app: ./spore-log
 
 witness: true
-start: auto
+launch: auto
 
 api: []
 topics: []

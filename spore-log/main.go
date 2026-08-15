@@ -128,8 +128,14 @@ func main() {
 		sporeTimeMs, _ := strconv.ParseInt(sporeTimeStr, 10, 64)
 		t := time.UnixMilli(sporeTimeMs).UTC().Format("2006-01-02T15:04:05.000Z")
 		kind := kindLabel(w)
-		body := w.Body()
-		line := fmt.Sprintf("%s  %s  %s", t, kind, body)
+		body := w.ArgIf("body", "")
+		rawBody := w.Body()
+		var line string
+		if body != "" {
+			line = fmt.Sprintf("%s  %s  %s  {%s}", t, kind, body, rawBody)
+		} else {
+			line = fmt.Sprintf("%s  %s  %s", t, kind, rawBody)
+		}
 		if err := logger.writeLine(line); err != nil {
 			log.Println("spore-log: write error:", err)
 		}

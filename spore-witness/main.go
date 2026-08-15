@@ -41,7 +41,7 @@ func main() {
 		if w.Flag("spore_node") && w.ArgIf("cast", "") != "" {
 			label = fmt.Sprintf("NOD(%s)", w.ArgIf("cast", ""))
 		}
-		body := w.Body()
+		body := w.ArgIf("body", w.Body())
 		fmt.Printf("%s%s  %s%s  %s\n", color, t, label, colorReset, body)
 	})
 

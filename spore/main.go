@@ -9,8 +9,10 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
 	"github.com/sporeos-dev/spore-client-libs/spore_go/response"
@@ -23,12 +25,6 @@ const defaultTimeoutMs = 30_000
 
 func main() {
 	args := os.Args[1:]
-
-	// No args or "shell" subcommand → exec into spore-shell via hub.
-	if len(args) == 0 || args[0] == "shell" {
-		runShell()
-		return
-	}
 
 	// "help" subcommand → print usage.
 	if args[0] == "help" {
@@ -78,15 +74,24 @@ func main() {
 	}
 	defer client.Disconnect()
 
-	resp, rerr, err := client.SendRawAndWait(cmd, defaultTimeoutMs)
+	err = client.SendRaw(cmd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err.Error())
 		os.Exit(1)
 	}
 
-	printResponse(resp, rerr)
+	isErr := false
+	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
+		if rerr != nil {
+			isErr = true
+		}
+		printResponse(resp, rerr)
+		client.Disconnect()
+	})
 
-	if rerr != nil {
+	client.Listen()
+
+	if isErr {
 		os.Exit(1)
 	}
 }
@@ -99,11 +104,6 @@ func printHelp() {
 	fmt.Println("  open <node-id>   Run a node in the foreground of this terminal")
 	fmt.Println("  help             Show this help")
 	fmt.Println()
-}
-
-// runShell opens spore-shell in the foreground of this terminal.
-func runShell() {
-	runNode("dev.sporeos.shell")
 }
 
 // runNode queries the hub for a node's binary path via SPORE.node.help and
@@ -119,31 +119,54 @@ func runNode(nodeID string) {
 		fmt.Fprintln(os.Stderr, "connection failed:", err.Error())
 		os.Exit(1)
 	}
+	exeChan := make(chan string, 1)
 
-	resp, rerr, err := client.SendRawAndWait(
-		fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)),
-		defaultTimeoutMs,
-	)
+	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "could not resolve node %q: %s\n", nodeID, rerr.What())
+			client.Disconnect()
+			os.Exit(1)
+		}
+
+		exe, ok := resp.Arg("binary")
+		if !ok || strings.TrimSpace(exe) == "" {
+			fmt.Fprintf(os.Stderr, "hub returned no binary path for %s\n", nodeID)
+			client.Disconnect()
+			os.Exit(1)
+		}
+		exeChan <- strings.TrimSpace(exe)
+	})
+
+	go func() {
+		err := client.Listen()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "listen failed:", err.Error())
+			client.Disconnect()
+			os.Exit(1)
+		}
+	}()
+
+	err = client.SendRaw(fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err.Error())
-		os.Exit(1)
-	}
-	if rerr != nil {
-		fmt.Fprintf(os.Stderr, "could not resolve node %q: %s\n", nodeID, rerr.What())
+		fmt.Fprintln(os.Stderr, "send failed:", err.Error())
+		client.Disconnect()
 		os.Exit(1)
 	}
 
-	exe, ok := resp.Arg("binary")
-	if !ok || strings.TrimSpace(exe) == "" {
-		fmt.Fprintf(os.Stderr, "hub returned no binary path for %s\n", nodeID)
-		os.Exit(1)
-	}
-	exe = strings.TrimSpace(exe)
-
-	client.Disconnect()
-
-	if err := syscall.Exec(exe, []string{nodeID}, os.Environ()); err != nil {
-		fmt.Fprintln(os.Stderr, "exec failed:", err.Error())
+	select {
+	case exe := <-exeChan:
+		client.Disconnect()
+		if unquoted, err := strconv.Unquote(exe); err == nil {
+			exe = unquoted
+		}
+		if err := syscall.Exec(exe, []string{nodeID}, os.Environ()); err != nil {
+			fmt.Fprintln(os.Stderr, "exec failed:", err.Error())
+			client.Disconnect()
+			os.Exit(1)
+		}
+	case <-time.After(5 * time.Second):
+		fmt.Fprintf(os.Stderr, "timed out waiting for response\n")
+		client.Disconnect()
 		os.Exit(1)
 	}
 }

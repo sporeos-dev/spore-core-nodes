@@ -934,41 +934,6 @@ func main() {
 			continue
 		}
 
-		// subscribe/unsubscribe — use the client methods so a callback is
-		// registered and incoming publish messages are printed automatically.
-		if strings.HasPrefix(input, "SPORE.topic.subscribe") {
-			topic := extractTopicArg(input)
-			if topic == "" {
-				fmt.Println("usage: SPORE.topic.subscribe topic=<topic>")
-				continue
-			}
-			raw := fmt.Sprintf("SPORE.topic.subscribe topic=%s ~sub%d", topic, handleCounter.Add(1))
-			if _, rerr, err := client.SendRawAndWait(raw, defaultTimeoutMs); err != nil {
-				fmt.Println("Subscribe error:", err.Error())
-			} else if rerr != nil {
-				fmt.Println("Subscribe error:", rerr.What())
-			} else {
-				fmt.Printf("Subscribed to %s\r\n", topic)
-			}
-			continue
-		}
-		if strings.HasPrefix(input, "SPORE.topic.unsubscribe") {
-			topic := extractTopicArg(input)
-			if topic == "" {
-				fmt.Println("usage: SPORE.topic.unsubscribe topic=<topic>")
-				continue
-			}
-			raw := fmt.Sprintf("SPORE.topic.unsubscribe topic=%s ~unsub%d", topic, handleCounter.Add(1))
-			if _, rerr, err := client.SendRawAndWait(raw, defaultTimeoutMs); err != nil {
-				fmt.Println("Unsubscribe error:", err.Error())
-			} else if rerr != nil {
-				fmt.Println("Unsubscribe error:", rerr.What())
-			} else {
-				fmt.Printf("Unsubscribed from %s\r\n", topic)
-			}
-			continue
-		}
-
 		if !utilities.HasHandle(input) {
 			input = utilities.AppendHandle(input)
 		}

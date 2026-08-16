@@ -28,10 +28,8 @@ const (
 )
 
 func main() {
-	client, err := spore.New(appId)
-	if err != nil {
-		log.Fatal("create client:", err)
-	}
+	client := spore.New(appId).
+		WithDefaultErrorHandler()
 
 	client.OnWitness(func(w *witness.Witness) {
 		sporeTimeStr := w.ArgIf("spore_time", "0")

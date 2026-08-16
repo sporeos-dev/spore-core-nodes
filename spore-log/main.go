@@ -118,10 +118,8 @@ func main() {
 	}
 	defer logger.close()
 
-	client, err := spore.New(appId)
-	if err != nil {
-		log.Fatalf("spore-log: %v", err)
-	}
+	client := spore.New(appId).
+		WithDefaultErrorHandler()
 
 	client.OnWitness(func(w *witness.Witness) {
 		sporeTimeStr := w.ArgIf("spore_time", "0")

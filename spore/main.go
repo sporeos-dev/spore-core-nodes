@@ -62,11 +62,7 @@ func main() {
 		cmd = cmd + fmt.Sprintf(" ~s%04x", rand.Intn(0x10000))
 	}
 
-	client, err := spore.New(appId)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to create client:", err.Error())
-		os.Exit(1)
-	}
+	client := spore.New(appId).WithDefaultErrorHandler()
 
 	if err := client.Connect(); err != nil {
 		fmt.Fprintln(os.Stderr, "connection failed:", err.Error())
@@ -74,7 +70,7 @@ func main() {
 	}
 	defer client.Disconnect()
 
-	err = client.SendRaw(cmd)
+	err := client.SendRaw(cmd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err.Error())
 		os.Exit(1)
@@ -109,11 +105,8 @@ func printHelp() {
 // runNode queries the hub for a node's binary path via SPORE.node.help and
 // replaces this process with that binary, running it in the foreground.
 func runNode(nodeID string) {
-	client, err := spore.New(appId)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to create client:", err.Error())
-		os.Exit(1)
-	}
+	client := spore.New(appId).
+		WithDefaultErrorHandler()
 
 	if err := client.Connect(); err != nil {
 		fmt.Fprintln(os.Stderr, "connection failed:", err.Error())
@@ -146,7 +139,7 @@ func runNode(nodeID string) {
 		}
 	}()
 
-	err = client.SendRaw(fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)))
+	err := client.SendRaw(fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "send failed:", err.Error())
 		client.Disconnect()

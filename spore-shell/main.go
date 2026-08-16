@@ -825,11 +825,8 @@ func main() {
 	fmt.Println("Starting Spore CLI")
 	fmt.Println("Type (h)elp for list of commands.")
 
-	client, err := spore.New(appId)
-	if err != nil {
-		fmt.Println("Failed to create client:", err.Error())
-		return
-	}
+	client := spore.New(appId).
+		WithDefaultErrorHandler()
 
 	// // When the hub routes cli.echo back to us, print the received expression
 	// // and send the reply.

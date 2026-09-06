@@ -509,89 +509,140 @@ func formatJSONLines(v interface{}, indent string) []string {
 	}
 }
 
-// parseValueLines returns indented display lines for a response arg value and
-// an optional warning string when the value appears malformed.
-func parseValueLines(v string) (lines []string, warning string) {
-	const indent = "    "
+// parseValue parses a raw response argument value string into display lines or a single value string.
+// It returns:
+// - isComplex: true if the value is a list, object, or multiline string.
+// - singleVal: the scalar value string if !isComplex.
+// - lines: indented display lines for list/object/multiline items if isComplex.
+// - warning: an optional warning string if quotes or brackets were unmatched.
+func parseValue(v string, indent string) (isComplex bool, singleVal string, lines []string, warning string) {
+	raw := strings.TrimSpace(v)
 
-	// Try JSON first — if the value is a valid JSON object or array, format it recursively.
+	// Check for unmatched outer quotes or brackets.
+	if strings.HasPrefix(raw, "'") && !strings.HasSuffix(raw, "'") {
+		warning = "unmatched '"
+	} else if !strings.HasPrefix(raw, "'") && strings.HasSuffix(raw, "'") {
+		warning = "unmatched '"
+	} else if strings.HasPrefix(raw, "\"") && !strings.HasSuffix(raw, "\"") {
+		warning = "unmatched \""
+	} else if !strings.HasPrefix(raw, "\"") && strings.HasSuffix(raw, "\"") {
+		warning = "unmatched \""
+	} else if strings.HasPrefix(raw, "[") && !strings.HasSuffix(raw, "]") {
+		warning = "unmatched ["
+	} else if !strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		warning = "unmatched ]"
+	} else if strings.HasPrefix(raw, "{") && !strings.HasSuffix(raw, "}") {
+		warning = "unmatched {"
+	} else if !strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
+		warning = "unmatched }"
+	}
+
+	// Clean/unwrap surrounding quotes if present.
+	clean := raw
+	if len(clean) >= 2 && ((strings.HasPrefix(clean, "'") && strings.HasSuffix(clean, "'")) ||
+		(strings.HasPrefix(clean, "\"") && strings.HasSuffix(clean, "\""))) {
+		clean = clean[1 : len(clean)-1]
+	}
+
+	// 1. Try JSON unmarshaling first.
 	var jsonVal interface{}
-	if err := json.Unmarshal([]byte(v), &jsonVal); err == nil {
-		switch jsonVal.(type) {
+	errClean := json.Unmarshal([]byte(clean), &jsonVal)
+	if errClean != nil && clean != raw {
+		if json.Unmarshal([]byte(raw), &jsonVal) == nil {
+			errClean = nil
+		}
+	}
+
+	if errClean == nil {
+		// If jsonVal is a string, it might be a nested JSON or Spore encoded array/object
+		if str, ok := jsonVal.(string); ok {
+			strTrim := strings.TrimSpace(str)
+			var nestedVal interface{}
+			if (strings.HasPrefix(strTrim, "[") && strings.HasSuffix(strTrim, "]")) ||
+				(strings.HasPrefix(strTrim, "{") && strings.HasSuffix(strTrim, "}")) {
+				if json.Unmarshal([]byte(strTrim), &nestedVal) == nil {
+					jsonVal = nestedVal
+				}
+			}
+		}
+
+		switch val := jsonVal.(type) {
 		case map[string]interface{}, []interface{}:
-			return formatJSONLines(jsonVal, indent), ""
-		}
-	}
-
-	// Single-quoted string: strip quotes if balanced.
-	if strings.HasPrefix(v, "'") {
-		if len(v) >= 2 && strings.HasSuffix(v, "'") {
-			return []string{indent + v[1:len(v)-1]}, ""
-		}
-		return []string{indent + v}, "unmatched '"
-	}
-	if strings.HasSuffix(v, "'") {
-		return []string{indent + v}, "unmatched '"
-	}
-
-	// Remaining double-quote means malformed — client strips valid \"…\" pairs.
-	if strings.HasPrefix(v, "\"") || strings.HasSuffix(v, "\"") {
-		return []string{indent + v}, "unmatched \""
-	}
-
-	// Non-JSON array (Spore [...] syntax).
-	if strings.HasPrefix(v, "[") {
-		if strings.HasSuffix(v, "]") {
-			inner := strings.TrimSpace(v[1 : len(v)-1])
-			if inner == "" {
-				return []string{indent + "(empty)"}, ""
-			}
-			for _, item := range splitArgs(inner) {
-				item = strings.TrimSpace(item)
-				if strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"") && len(item) >= 2 {
-					item = item[1 : len(item)-1]
+			return true, "", formatJSONLines(val, indent), warning
+		case string:
+			if strings.Contains(val, "\n") {
+				var multiline []string
+				for _, l := range strings.Split(val, "\n") {
+					multiline = append(multiline, indent+l)
 				}
-				lines = append(lines, indent+"- "+item)
+				return true, "", multiline, warning
 			}
-			return lines, ""
+			return false, val, nil, warning
+		case bool:
+			if val {
+				return false, "true", nil, warning
+			}
+			return false, "false", nil, warning
+		case nil:
+			return false, "(null)", nil, warning
+		default:
+			return false, fmt.Sprintf("%v", val), nil, warning
 		}
-		return []string{indent + v}, "unmatched ["
-	}
-	if strings.HasSuffix(v, "]") {
-		return []string{indent + v}, "unmatched ]"
 	}
 
-	// Non-JSON object (Spore {...} syntax).
-	if strings.HasPrefix(v, "{") {
-		if strings.HasSuffix(v, "}") {
-			inner := strings.TrimSpace(v[1 : len(v)-1])
-			if inner == "" {
-				return []string{indent + "(empty)"}, ""
-			}
-			for _, pair := range splitArgs(inner) {
-				pair = strings.TrimSpace(pair)
-				eachIdx := strings.IndexByte(pair, '=')
-				if eachIdx < 0 {
-					lines = append(lines, indent+pair)
-					continue
-				}
-				key := pair[:eachIdx]
-				val := pair[eachIdx+1:]
-				if strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"") && len(val) >= 2 {
-					val = val[1 : len(val)-1]
-				}
-				lines = append(lines, indent+key+": "+val)
-			}
-			return lines, ""
+	// 2. Try Spore array syntax [...]
+	if strings.HasPrefix(clean, "[") && strings.HasSuffix(clean, "]") {
+		inner := strings.TrimSpace(clean[1 : len(clean)-1])
+		if inner == "" {
+			return true, "", []string{indent + "(empty)"}, warning
 		}
-		return []string{indent + v}, "unmatched {"
-	}
-	if strings.HasSuffix(v, "}") {
-		return []string{indent + v}, "unmatched }"
+		var itemLines []string
+		for _, item := range splitArgs(inner) {
+			item = strings.TrimSpace(item)
+			if len(item) >= 2 && ((strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"")) ||
+				(strings.HasPrefix(item, "'") && strings.HasSuffix(item, "'"))) {
+				item = item[1 : len(item)-1]
+			}
+			itemLines = append(itemLines, indent+"- "+item)
+		}
+		return true, "", itemLines, warning
 	}
 
-	// Plain string.
-	return []string{indent + v}, ""
+	// 3. Try Spore object syntax {...}
+	if strings.HasPrefix(clean, "{") && strings.HasSuffix(clean, "}") {
+		inner := strings.TrimSpace(clean[1 : len(clean)-1])
+		if inner == "" {
+			return true, "", []string{indent + "(empty)"}, warning
+		}
+		var pairLines []string
+		for _, pair := range splitArgs(inner) {
+			pair = strings.TrimSpace(pair)
+			eachIdx := strings.IndexAny(pair, "=:")
+			if eachIdx < 0 {
+				pairLines = append(pairLines, indent+pair)
+				continue
+			}
+			key := strings.TrimSpace(pair[:eachIdx])
+			val := strings.TrimSpace(pair[eachIdx+1:])
+			if len(val) >= 2 && ((strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) ||
+				(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'"))) {
+				val = val[1 : len(val)-1]
+			}
+			pairLines = append(pairLines, indent+key+": "+val)
+		}
+		return true, "", pairLines, warning
+	}
+
+	// 4. Plain scalar string value
+	if strings.Contains(clean, "\n") {
+		var multiline []string
+		for _, l := range strings.Split(clean, "\n") {
+			multiline = append(multiline, indent+l)
+		}
+		return true, "", multiline, warning
+	}
+
+	return false, clean, nil, warning
 }
 
 // printResponse formats and prints a spore Response above the current prompt.
@@ -661,9 +712,13 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				lines = append(lines, "  "+k)
-				valLines, warn := parseValueLines(args[k])
-				lines = append(lines, valLines...)
+				isComplex, singleVal, valLines, warn := parseValue(args[k], "    ")
+				if isComplex {
+					lines = append(lines, "  "+k+":")
+					lines = append(lines, valLines...)
+				} else {
+					lines = append(lines, "  "+k+": "+singleVal)
+				}
 				if warn != "" {
 					warnings = append(warnings, "  "+k+": "+warn)
 				}
@@ -689,7 +744,7 @@ func parseRespArgs(resp *response.Response) map[string]string {
 	raw := resp.Serialize()
 	fields := splitFields(raw)
 	args := make(map[string]string)
-	skipArgs := map[string]bool{"capture": true, "code": true, "what": true}
+	skipArgs := map[string]bool{"capture": true, "code": true, "what": true, "cast": true}
 	skipFlags := map[string]bool{
 		"ok": true, "cancelled": true, "error": true, "custom_error": true,
 		"node_error": true, "spore_error": true, "cast_error": true, "capture_error": true,
@@ -784,11 +839,7 @@ func parsePublishData(p *publish.Publish) (map[string]string, []string) {
 func printPublishMessage(p *publish.Publish) {
 	lines := []string{""}
 	topic := p.Topic()
-	cast := p.ArgIf("cast", "")
 	lines = append(lines, "  [publish] "+topic)
-	if cast != "" {
-		lines = append(lines, "  cast: "+cast)
-	}
 	args, flags := parsePublishData(p)
 	if len(args) > 0 || len(flags) > 0 {
 		lines = append(lines, "  ----------")
@@ -798,9 +849,13 @@ func printPublishMessage(p *publish.Publish) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			lines = append(lines, "  "+k)
-			valLines, _ := parseValueLines(args[k])
-			lines = append(lines, valLines...)
+			isComplex, singleVal, valLines, _ := parseValue(args[k], "    ")
+			if isComplex {
+				lines = append(lines, "  "+k+":")
+				lines = append(lines, valLines...)
+			} else {
+				lines = append(lines, "  "+k+": "+singleVal)
+			}
 		}
 		for _, f := range flags {
 			lines = append(lines, "  "+f)

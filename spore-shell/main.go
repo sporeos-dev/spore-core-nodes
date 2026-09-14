@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 
 	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
 	"github.com/sporeos-dev/spore-client-libs/spore_go/publish"
+	"github.com/sporeos-dev/spore-client-libs/spore_go/request"
 	"github.com/sporeos-dev/spore-client-libs/spore_go/response"
 	"golang.org/x/term"
 )
@@ -55,6 +55,12 @@ var client *spore.Client
 
 // status tracks the connection state ("connected" or "disconnected").
 var status = "disconnected"
+
+// pendingConfirm holds an incoming "confirm" request while we wait for the
+// user to type y/n at the prompt. Guarded by pendingConfirmMu since it is
+// set from the listen goroutine (OnRequest) and read/cleared from main().
+var pendingConfirmMu sync.Mutex
+var pendingConfirm *request.Request
 
 // sendHint sends a hint command with the full typed text, the cursor
 // position (in runes), and an eol flag when the cursor is at the end of the line.
@@ -262,23 +268,11 @@ func longestCommonPrefix(strs []string) string {
 // fmt.Println calls in main() between prompts work correctly.
 func readLine(prompt string) (string, error) {
 	fd := int(os.Stdin.Fd())
+	// stdin is verified to be a tty in main() before the input loop starts,
+	// so MakeRaw should never fail here in normal operation.
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
-		// No raw-mode support (e.g. piped input) — fall back to buffered read.
-		outputMutex.Lock()
-		currentPrompt = prompt
-		waitingForInput = true
-		fmt.Print(prompt)
-		outputMutex.Unlock()
-
-		reader := bufio.NewReader(os.Stdin)
-		line, err := reader.ReadString('\n')
-
-		outputMutex.Lock()
-		waitingForInput = false
-		outputMutex.Unlock()
-
-		return strings.TrimRight(line, "\r\n"), err
+		return "", fmt.Errorf("stdin is not a terminal: %w", err)
 	}
 	defer term.Restore(fd, oldState)
 
@@ -987,6 +981,32 @@ func extractTopicArg(cmd string) string {
 	return ""
 }
 
+// handleIncomingRequest processes commands the hub routes to this node's own
+// API. Currently only "confirm" is handled: the request is stashed in
+// pendingConfirm and the main loop prompts the user for y/n on the next
+// readLine iteration.
+func handleIncomingRequest(r *request.Request) {
+	if !strings.HasSuffix(r.Command(), "confirm") {
+		return
+	}
+
+	msg := "[confirm] " + r.ArgIf("body", "")
+	if linesRaw, ok := r.Arg("lines"); ok {
+		if _, single, lines, _ := parseValue(linesRaw, "  "); lines != nil {
+			msg += "\r\n" + strings.Join(lines, "\r\n")
+		} else if single != "" {
+			msg += "\r\n  " + single
+		}
+	}
+	msg += "\r\n  Respond with y/n."
+
+	pendingConfirmMu.Lock()
+	pendingConfirm = r
+	pendingConfirmMu.Unlock()
+
+	printAbovePrompt(msg)
+}
+
 func main() {
 
 	fmt.Println("Starting Spore CLI")
@@ -1004,13 +1024,11 @@ func main() {
 		printAbovePrompt("[parse error] " + code + ": " + what + "\r\n  raw: " + raw)
 	})
 
-	// // When the hub routes cli.echo back to us, print the received expression
-	// // and send the reply.
-	// client.OnRequest(func(r *request.Request) {
-	// 	expression := r.ArgIf("expression", "")
-	// 	printAbovePrompt("[echo received: " + expression + "]")
-	// 	// client.SendResponse(response.New(r.Command(), r.Handle()).WithArg("echo", expression))
-	// })
+	// The hub routes our own "confirm" API command back to us when another
+	// node asks the user to confirm an action.
+	client.OnRequest(func(r *request.Request) {
+		handleIncomingRequest(r)
+	})
 
 	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
 		printResponse(resp, rerr)
@@ -1036,7 +1054,15 @@ func main() {
 		//
 		// get next line
 		//
-		input, err := readLine(fmt.Sprintf("[%s]>: ", status))
+		prompt := fmt.Sprintf("[%s]>: ", status)
+		pendingConfirmMu.Lock()
+		hasPendingConfirm := pendingConfirm != nil
+		pendingConfirmMu.Unlock()
+		if hasPendingConfirm {
+			prompt = "[confirm y/n]>: "
+		}
+
+		input, err := readLine(prompt)
 		if err == errInterrupt {
 			break MainLoop
 		}
@@ -1046,6 +1072,27 @@ func main() {
 		}
 
 		addToHistory(input)
+
+		//
+		// answer a pending confirm request, if any, instead of treating
+		// this line as a normal shell/hub command
+		//
+		pendingConfirmMu.Lock()
+		pc := pendingConfirm
+		pendingConfirm = nil
+		pendingConfirmMu.Unlock()
+
+		if pc != nil {
+			answer := strings.ToLower(strings.TrimSpace(input))
+			resp := response.New(pc.Command(), pc.Handle())
+			if answer == "y" || answer == "yes" {
+				resp = resp.WithFlag("confirm")
+			}
+			if err := client.SendResponse(resp); err != nil {
+				fmt.Println("Send error:", err.Error())
+			}
+			continue
+		}
 
 		//
 		// handle cli commands

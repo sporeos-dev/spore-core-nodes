@@ -12,7 +12,26 @@ schema: SPORE/v0d2
 version: 0.2.0
 app: ./spore-shell
 
-api: []
+api: 
+  - name: confirm
+    description: Confirm an action with the user.
+    risk: standard
+    usage:
+        - confirm body="Do you want to proceed?" lines=[ "Reasons", " - reason A", " - reason B" ]
+    inputs:
+        - name: body
+          type: string
+          description: The message to display to the user.
+          required: true
+        - name: lines
+          type: array
+          description: Additional lines to display to the user.
+          required: false
+    outputs:
+        - name: confirm
+          type: flag
+          description: The presence of this flag indicates confirmation on the action.
+
 topics: []
 permissions: []
 errors: []

@@ -93,6 +93,21 @@ func (l *rollingLogger) close() {
 	}
 }
 
+// sanitizeForLog strips ASCII control bytes (including ESC and newlines) from
+// untrusted witness content, so a forged body can't inject terminal escape
+// sequences or fake extra log lines when the file is later viewed.
+func sanitizeForLog(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // defaultLogPath returns the platform-specific path for the spore-log output file.
 func defaultLogPath() string {
 	switch runtime.GOOS {
@@ -126,8 +141,8 @@ func main() {
 		sporeTimeMs, _ := strconv.ParseInt(sporeTimeStr, 10, 64)
 		t := time.UnixMilli(sporeTimeMs).UTC().Format("2006-01-02T15:04:05.000Z")
 		kind := kindLabel(w)
-		body := w.ArgIf("body", "")
-		rawBody := w.Body()
+		body := sanitizeForLog(w.ArgIf("body", ""))
+		rawBody := sanitizeForLog(w.Body())
 		var line string
 		if body != "" {
 			line = fmt.Sprintf("%s  %s  %s  {%s}", t, kind, body, rawBody)

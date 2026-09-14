@@ -40,7 +40,7 @@ func main() {
 			label = fmt.Sprintf("NOD(%s)", w.ArgIf("cast", ""))
 		}
 		body := w.ArgIf("body", w.Body())
-		fmt.Printf("%s%s  %s%s  %s\n", color, t, label, colorReset, body)
+		fmt.Printf("%s%s  %s%s  %s\n", color, t, label, colorReset, sanitizeForDisplay(body))
 	})
 
 	if err := client.Connect(); err != nil {
@@ -71,9 +71,25 @@ func main() {
 	}
 }
 
+// sanitizeForDisplay strips ASCII control bytes (including ESC, which begins
+// every ANSI/CSI/OSC escape sequence) from untrusted witness content, so a
+// forged body can't inject terminal escape sequences or fake extra lines.
+// It never touches this program's own color/reset literals, only the
+// untrusted body text substituted alongside them.
+func sanitizeForDisplay(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // kindMeta returns the ANSI color and short label for a witness kind.
-func kindMeta(w *witness.Witness) (string, string) {
-	switch {
+func kindMeta(w *witness.Witness) (string, string) {	switch {
 	case w.Flag("spore_incoming"):
 		return colorCyan, "IN "
 	case w.Flag("spore_outgoing"):

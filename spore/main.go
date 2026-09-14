@@ -47,7 +47,10 @@ func main() {
 	cmd := strings.Join(args, " ")
 
 	// subscribe/unsubscribe require a persistent connection — block them here.
-	if args[0] == "SPORE.topic.subscribe" || args[0] == "SPORE.topic.unsubscribe" {
+	if args[0] == "dev.sporeos.SPORE.topic.subscribe" ||
+		strings.HasSuffix(args[0], ".dev.sporeos.SPORE.topic.subscribe") ||
+		args[0] == "dev.sporeos.SPORE.topic.unsubscribe" ||
+		strings.HasSuffix(args[0], ".dev.sporeos.SPORE.topic.unsubscribe") {
 		fmt.Fprintln(os.Stderr, "error: subscribe and unsubscribe require a persistent connection; use spore-shell instead")
 		os.Exit(1)
 	}
@@ -104,7 +107,7 @@ func printHelp() {
 	fmt.Println()
 }
 
-// runNode queries the hub for a node's binary path via SPORE.node.help and
+// runNode queries the hub for a node's binary path via help and
 // replaces this process with that binary, running it in the foreground.
 func runNode(nodeID string, trace bool) {
 	client := spore.New(appId).
@@ -141,7 +144,7 @@ func runNode(nodeID string, trace bool) {
 		}
 	}()
 
-	err := client.SendRaw(fmt.Sprintf("SPORE.node.help node=%s ~s%04x", nodeID, rand.Intn(0x10000)))
+	err := client.SendRaw(fmt.Sprintf("dev.sporeos.SPORE.state body=%s ~s%04x", nodeID, rand.Intn(0x10000)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "send failed:", err.Error())
 		client.Disconnect()
@@ -207,21 +210,25 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 		case rerr.Flag("capture_error"):
 			origin = "capture_error"
 		}
-		fmt.Fprintf(os.Stderr, "[%s]%s\n", errKind, handleStr)
-		fmt.Fprintf(os.Stderr, "%s // %s\n", subject, capture)
-		fmt.Fprintln(os.Stderr, "----------")
-		fmt.Fprintln(os.Stderr, "code:", rerr.Code())
-		fmt.Fprintln(os.Stderr, "what:", rerr.What())
+		fmt.Fprintf(os.Stderr, "  [%s]%s\n", errKind, handleStr)
+		fmt.Fprintf(os.Stderr, "  %s // %s\n", subject, capture)
+		fmt.Fprintln(os.Stderr, "  ----------")
+		for _, l := range wrapKeyValue("  ", "code", rerr.Code()) {
+			fmt.Fprintln(os.Stderr, l)
+		}
+		for _, l := range wrapKeyValue("  ", "what", rerr.What()) {
+			fmt.Fprintln(os.Stderr, l)
+		}
 		if origin != "" {
-			fmt.Fprintln(os.Stderr, "origin:", origin)
+			fmt.Fprintln(os.Stderr, "  origin:", origin)
 		}
 
 	case resp != nil && resp.Flag("ok"):
-		fmt.Printf("[ok]%s\n", handleStr)
-		fmt.Printf("%s // %s\n", subject, capture)
+		fmt.Printf("  [ok]%s\n", handleStr)
+		fmt.Printf("  %s // %s\n", subject, capture)
 		args := parseRespArgs(resp)
 		if len(args) > 0 {
-			fmt.Println("----------")
+			fmt.Println("  ----------")
 			keys := make([]string, 0, len(args))
 			for k := range args {
 				keys = append(keys, k)
@@ -230,19 +237,21 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 			for _, k := range keys {
 				isComplex, singleVal, valLines, _ := parseValue(args[k], "    ")
 				if isComplex {
-					fmt.Println(k + ":")
+					fmt.Println("  " + k + ":")
 					for _, line := range valLines {
 						fmt.Println(line)
 					}
 				} else {
-					fmt.Printf("%s: %s\n", k, singleVal)
+					for _, l := range wrapKeyValue("  ", k, singleVal) {
+						fmt.Println(l)
+					}
 				}
 			}
 		}
 
 	case resp != nil && resp.Flag("cancelled"):
-		fmt.Printf("[cancelled]%s\n", handleStr)
-		fmt.Printf("%s // %s\n", subject, capture)
+		fmt.Printf("  [cancelled]%s\n", handleStr)
+		fmt.Printf("  %s // %s\n", subject, capture)
 	}
 	fmt.Println()
 }
@@ -317,6 +326,39 @@ func splitFields(s string) []string {
 	return fields
 }
 
+// maxLineWidth is the target wrap width for long single-line values.
+const maxLineWidth = 100
+
+// wrapKeyValue formats "key: value" as one or more lines, word-wrapping value
+// at maxLineWidth and indenting continuation lines under the value's column.
+func wrapKeyValue(baseIndent, key, value string) []string {
+	prefix := baseIndent + key + ": "
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return []string{strings.TrimRight(prefix, " ")}
+	}
+	hang := strings.Repeat(" ", len(prefix))
+	var lines []string
+	cur := prefix
+	first := true
+	for _, w := range words {
+		candidate := cur
+		if !first {
+			candidate += " "
+		}
+		candidate += w
+		if !first && len(candidate) > maxLineWidth {
+			lines = append(lines, cur)
+			cur = hang + w
+			continue
+		}
+		cur = candidate
+		first = false
+	}
+	lines = append(lines, cur)
+	return lines
+}
+
 // parseValue parses a raw response argument value string into display lines or a single value string.
 // It returns:
 // - isComplex: true if the value is a list, object, or multiline string.
@@ -376,7 +418,11 @@ func parseValue(v string, indent string) (isComplex bool, singleVal string, line
 
 		switch val := jsonVal.(type) {
 		case map[string]interface{}, []interface{}:
-			return true, "", formatJSONLines(val, indent), warning
+			valLines := formatJSONLines(val, indent)
+			if len(valLines) == 1 {
+				return false, strings.TrimSpace(valLines[0]), nil, warning
+			}
+			return true, "", valLines, warning
 		case string:
 			if strings.Contains(val, "\n") {
 				var multiline []string
@@ -404,14 +450,22 @@ func parseValue(v string, indent string) (isComplex bool, singleVal string, line
 		if inner == "" {
 			return true, "", []string{indent + "(empty)"}, warning
 		}
-		var itemLines []string
-		for _, item := range splitArgs(inner) {
+		items := splitArgs(inner)
+		unwrap := func(item string) string {
 			item = strings.TrimSpace(item)
 			if len(item) >= 2 && ((strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"")) ||
 				(strings.HasPrefix(item, "'") && strings.HasSuffix(item, "'"))) {
 				item = item[1 : len(item)-1]
 			}
-			itemLines = append(itemLines, indent+"- "+item)
+			return item
+		}
+		// A single-item list is displayed as a plain pair rather than a list.
+		if len(items) == 1 {
+			return false, unwrap(items[0]), nil, warning
+		}
+		var itemLines []string
+		for _, item := range items {
+			itemLines = append(itemLines, indent+"- "+unwrap(item))
 		}
 		return true, "", itemLines, warning
 	}
@@ -479,6 +533,10 @@ func formatJSONLines(v interface{}, indent string) []string {
 	case []interface{}:
 		if len(val) == 0 {
 			return []string{indent + "(empty)"}
+		}
+		// A single-item list is displayed as a plain pair rather than a list.
+		if len(val) == 1 {
+			return formatJSONLines(val[0], indent)
 		}
 		var lines []string
 		for _, item := range val {

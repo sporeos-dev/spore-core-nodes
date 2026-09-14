@@ -28,9 +28,12 @@ api:
           description: Additional lines to display to the user.
           required: false
     outputs:
-        - name: confirm
+        - name: yes
           type: flag
-          description: The presence of this flag indicates confirmation on the action.
+          description: Present when the user confirms the action.
+        - name: no
+          type: flag
+          description: Present when the user declines the action.
 
 topics: []
 permissions: []

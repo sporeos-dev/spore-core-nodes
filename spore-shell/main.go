@@ -779,8 +779,8 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 	case resp != nil && resp.Flag("ok"):
 		lines = append(lines, "  [ok]"+handleStr)
 		lines = append(lines, subjectLine)
-		args := parseRespArgs(resp)
-		if len(args) > 0 {
+		args, flags := parseRespArgs(resp)
+		if len(args) > 0 || len(flags) > 0 {
 			lines = append(lines, "  ----------")
 			var warnings []string
 			keys := make([]string, 0, len(args))
@@ -799,6 +799,9 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 				if warn != "" {
 					warnings = append(warnings, "  "+k+": "+warn)
 				}
+			}
+			for _, f := range flags {
+				lines = append(lines, "  "+f)
 			}
 			if len(warnings) > 0 {
 				lines = append(lines, "  ----------")
@@ -822,7 +825,7 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 func printHintResponse(resp *response.Response) {
 	lines := []string{"[connected]>: " + resp.ArgIf("body", ""), "  hint // " + resp.ArgIf("body", ""), "  ----------"}
 
-	args := parseRespArgs(resp)
+	args, flags := parseRespArgs(resp)
 	keys := make([]string, 0, len(args))
 	for k := range args {
 		keys = append(keys, k)
@@ -840,16 +843,21 @@ func printHintResponse(resp *response.Response) {
 			lines = append(lines, wrapKeyValue("  ", k, singleVal)...)
 		}
 	}
+	for _, f := range flags {
+		lines = append(lines, "  "+f)
+	}
 
 	lines = append(lines, "")
 	printAbovePrompt(strings.Join(lines, "\r\n"))
 }
 
-// parseRespArgs extracts all non-reserved key=value pairs from a serialized response.
-func parseRespArgs(resp *response.Response) map[string]string {
+// parseRespArgs extracts all non-reserved key=value pairs and flags from a
+// serialized response.
+func parseRespArgs(resp *response.Response) (map[string]string, []string) {
 	raw := resp.Serialize()
 	fields := splitFields(raw)
 	args := make(map[string]string)
+	var flags []string
 	skipArgs := map[string]bool{"capture": true, "code": true, "what": true, "cast": true}
 	skipFlags := map[string]bool{
 		"ok": true, "cancelled": true, "error": true, "custom_error": true,
@@ -866,11 +874,11 @@ func parseRespArgs(resp *response.Response) map[string]string {
 				v = v[1 : len(v)-1]
 			}
 			args[kv[0]] = v
-		} else if skipFlags[f] || strings.HasPrefix(f, "~") {
-			continue
+		} else if !skipFlags[f] && !strings.HasPrefix(f, "~") {
+			flags = append(flags, f)
 		}
 	}
-	return args
+	return args, flags
 }
 
 // splitFields splits a Spore wire string by spaces, respecting quoted strings
@@ -981,30 +989,61 @@ func extractTopicArg(cmd string) string {
 	return ""
 }
 
+// confirmRespondPrompt is the fixed prompt shown while a confirm request is
+// pending; the question itself is printed as a block above it.
+const confirmRespondPrompt = "  [respond][y/N]>: "
+
 // handleIncomingRequest processes commands the hub routes to this node's own
 // API. Currently only "confirm" is handled: the request is stashed in
-// pendingConfirm and the main loop prompts the user for y/n on the next
-// readLine iteration.
+// pendingConfirm, the body/lines are printed as an indented block, and the
+// confirmRespondPrompt is shown in place of the normal shell prompt until
+// the user answers.
 func handleIncomingRequest(r *request.Request) {
 	if !strings.HasSuffix(r.Command(), "confirm") {
 		return
 	}
 
-	msg := "[confirm] " + r.ArgIf("body", "")
+	lines := []string{"", "  " + r.ArgIf("body", "")}
 	if linesRaw, ok := r.Arg("lines"); ok {
-		if _, single, lines, _ := parseValue(linesRaw, "  "); lines != nil {
-			msg += "\r\n" + strings.Join(lines, "\r\n")
-		} else if single != "" {
-			msg += "\r\n  " + single
+		for _, l := range parseConfirmLines(linesRaw) {
+			lines = append(lines, "    "+l)
 		}
 	}
-	msg += "\r\n  Respond with y/n."
 
 	pendingConfirmMu.Lock()
 	pendingConfirm = r
 	pendingConfirmMu.Unlock()
 
-	printAbovePrompt(msg)
+	// Switch to the respond prompt so it redraws in place of whatever the
+	// terminal was previously displaying.
+	outputMutex.Lock()
+	currentPrompt = confirmRespondPrompt
+	inputBuf = nil
+	inputCursor = 0
+	outputMutex.Unlock()
+
+	printAbovePrompt(strings.Join(lines, "\r\n"))
+}
+
+// parseConfirmLines splits a Spore array value (e.g. ["what", "who"]) into
+// its plain unquoted string entries, with no added bullet formatting.
+func parseConfirmLines(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "[")
+	raw = strings.TrimSuffix(raw, "]")
+
+	var out []string
+	for _, item := range splitArgs(raw) {
+		item = strings.TrimSpace(item)
+		if len(item) >= 2 && ((strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"")) ||
+			(strings.HasPrefix(item, "'") && strings.HasSuffix(item, "'"))) {
+			item = item[1 : len(item)-1]
+		}
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func main() {
@@ -1057,10 +1096,10 @@ func main() {
 		prompt := fmt.Sprintf("[%s]>: ", status)
 		pendingConfirmMu.Lock()
 		hasPendingConfirm := pendingConfirm != nil
-		pendingConfirmMu.Unlock()
 		if hasPendingConfirm {
-			prompt = "[confirm y/n]>: "
+			prompt = confirmRespondPrompt
 		}
+		pendingConfirmMu.Unlock()
 
 		input, err := readLine(prompt)
 		if err == errInterrupt {
@@ -1070,8 +1109,6 @@ func main() {
 			fmt.Println("Error reading input:", err.Error())
 			continue
 		}
-
-		addToHistory(input)
 
 		//
 		// answer a pending confirm request, if any, instead of treating
@@ -1086,13 +1123,17 @@ func main() {
 			answer := strings.ToLower(strings.TrimSpace(input))
 			resp := response.New(pc.Command(), pc.Handle())
 			if answer == "y" || answer == "yes" {
-				resp = resp.WithFlag("confirm")
+				resp = resp.WithFlag("yes")
+			} else {
+				resp = resp.WithFlag("no")
 			}
 			if err := client.SendResponse(resp); err != nil {
 				fmt.Println("Send error:", err.Error())
 			}
 			continue
 		}
+
+		addToHistory(input)
 
 		//
 		// handle cli commands

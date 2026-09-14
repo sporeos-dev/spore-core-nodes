@@ -50,6 +50,32 @@ var history []string
 // handleCounter generates unique handle tokens for subscribe/unsubscribe requests.
 var handleCounter atomic.Int64
 
+// client is the active Spore client connection.
+var client *spore.Client
+
+// status tracks the connection state ("connected" or "disconnected").
+var status = "disconnected"
+
+// sendHint sends a hint command with the full typed text, the cursor
+// position (in runes), and an eol flag when the cursor is at the end of the line.
+func sendHint(fullText string, cursor int) {
+	if status != "connected" || client == nil {
+		printAbovePrompt("[not connected: cannot fetch hints]")
+		return
+	}
+
+	escaped := strings.ReplaceAll(fullText, `"`, `\"`)
+	cmd := fmt.Sprintf(`hint body="%s" cursor=%d`, escaped, cursor)
+	if cursor == len([]rune(fullText)) {
+		cmd += " eol"
+	}
+	cmd = utilities.AppendHandle(cmd)
+
+	if err := client.SendRaw(cmd); err != nil {
+		printAbovePrompt("[hint error: " + err.Error() + "]")
+	}
+}
+
 // printAbovePrompt clears the current input line, prints a message on its own
 // line, then redraws the prompt and any partially-typed input so the user can
 // keep typing uninterrupted.
@@ -365,10 +391,10 @@ func readLine(prompt string) (string, error) {
 			outputMutex.Unlock()
 			return "", errInterrupt
 
-		case 0x09: // Tab — path completion.
+		case 0x09: // Tab — path completion or hint fallback.
 			// Analyse the buffer while the mutex is still held (no mutex calls
 			// inside findPathCompletion), then release it so printAbovePrompt
-			// can acquire it safely when we need to display multiple matches.
+			// can acquire it safely when we need to display multiple matches or hints.
 			comp := findPathCompletion(inputBuf, inputCursor)
 			outputMutex.Unlock()
 
@@ -387,6 +413,9 @@ func readLine(prompt string) (string, error) {
 						newPath = lcp
 					}
 				}
+			} else {
+				// Path completion found no matches — fall back to sending hint.
+				sendHint(string(inputBuf), inputCursor)
 			}
 
 			// Re-acquire the mutex before touching shared input state.
@@ -484,6 +513,10 @@ func formatJSONLines(v interface{}, indent string) []string {
 		if len(val) == 0 {
 			return []string{indent + "(empty)"}
 		}
+		// A single-item list is displayed as a plain pair rather than a list.
+		if len(val) == 1 {
+			return formatJSONLines(val[0], indent)
+		}
 		var lines []string
 		for _, item := range val {
 			subLines := formatJSONLines(item, indent+"  ")
@@ -568,7 +601,11 @@ func parseValue(v string, indent string) (isComplex bool, singleVal string, line
 
 		switch val := jsonVal.(type) {
 		case map[string]interface{}, []interface{}:
-			return true, "", formatJSONLines(val, indent), warning
+			valLines := formatJSONLines(val, indent)
+			if len(valLines) == 1 {
+				return false, strings.TrimSpace(valLines[0]), nil, warning
+			}
+			return true, "", valLines, warning
 		case string:
 			if strings.Contains(val, "\n") {
 				var multiline []string
@@ -596,14 +633,22 @@ func parseValue(v string, indent string) (isComplex bool, singleVal string, line
 		if inner == "" {
 			return true, "", []string{indent + "(empty)"}, warning
 		}
-		var itemLines []string
-		for _, item := range splitArgs(inner) {
+		items := splitArgs(inner)
+		unwrap := func(item string) string {
 			item = strings.TrimSpace(item)
 			if len(item) >= 2 && ((strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"")) ||
 				(strings.HasPrefix(item, "'") && strings.HasSuffix(item, "'"))) {
 				item = item[1 : len(item)-1]
 			}
-			itemLines = append(itemLines, indent+"- "+item)
+			return item
+		}
+		// A single-item list is displayed as a plain pair rather than a list.
+		if len(items) == 1 {
+			return false, unwrap(items[0]), nil, warning
+		}
+		var itemLines []string
+		for _, item := range items {
+			itemLines = append(itemLines, indent+"- "+unwrap(item))
 		}
 		return true, "", itemLines, warning
 	}
@@ -645,9 +690,47 @@ func parseValue(v string, indent string) (isComplex bool, singleVal string, line
 	return false, clean, nil, warning
 }
 
+// maxLineWidth is the target wrap width for long single-line values.
+const maxLineWidth = 100
+
+// wrapKeyValue formats "key: value" as one or more lines, word-wrapping value
+// at maxLineWidth and indenting continuation lines under the value's column.
+func wrapKeyValue(baseIndent, key, value string) []string {
+	prefix := baseIndent + key + ": "
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return []string{strings.TrimRight(prefix, " ")}
+	}
+	hang := strings.Repeat(" ", len(prefix))
+	var lines []string
+	cur := prefix
+	first := true
+	for _, w := range words {
+		candidate := cur
+		if !first {
+			candidate += " "
+		}
+		candidate += w
+		if !first && len(candidate) > maxLineWidth {
+			lines = append(lines, cur)
+			cur = hang + w
+			continue
+		}
+		cur = candidate
+		first = false
+	}
+	lines = append(lines, cur)
+	return lines
+}
+
 // printResponse formats and prints a spore Response above the current prompt.
 // Lines are joined with \r\n so they render correctly in raw terminal mode.
 func printResponse(resp *response.Response, rerr *response.ResponseError) {
+	if rerr == nil && resp != nil && resp.Flag("ok") && resp.Command() == "hint" {
+		printHintResponse(resp)
+		return
+	}
+
 	lines := []string{""}
 
 	var handle, subject, capture string
@@ -717,7 +800,7 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 					lines = append(lines, "  "+k+":")
 					lines = append(lines, valLines...)
 				} else {
-					lines = append(lines, "  "+k+": "+singleVal)
+					lines = append(lines, wrapKeyValue("  ", k, singleVal)...)
 				}
 				if warn != "" {
 					warnings = append(warnings, "  "+k+": "+warn)
@@ -733,6 +816,35 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 	case resp != nil && resp.Flag("cancelled"):
 		lines = append(lines, "  [cancelled]"+handleStr)
 		lines = append(lines, subjectLine)
+	}
+
+	lines = append(lines, "")
+	printAbovePrompt(strings.Join(lines, "\r\n"))
+}
+
+// printHintResponse formats a hint response as a compact block: the
+// typed query as a title line, a divider, then the hint fields — with no
+// surrounding blank lines.
+func printHintResponse(resp *response.Response) {
+	lines := []string{"[connected]>: " + resp.ArgIf("body", ""), "  hint // " + resp.ArgIf("body", ""), "  ----------"}
+
+	args := parseRespArgs(resp)
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if k == "body" {
+			continue
+		}
+		isComplex, singleVal, valLines, _ := parseValue(args[k], "    ")
+		if isComplex {
+			lines = append(lines, "  "+k+":")
+			lines = append(lines, valLines...)
+		} else {
+			lines = append(lines, wrapKeyValue("  ", k, singleVal)...)
+		}
 	}
 
 	lines = append(lines, "")
@@ -854,7 +966,7 @@ func printPublishMessage(p *publish.Publish) {
 				lines = append(lines, "  "+k+":")
 				lines = append(lines, valLines...)
 			} else {
-				lines = append(lines, "  "+k+": "+singleVal)
+				lines = append(lines, wrapKeyValue("  ", k, singleVal)...)
 			}
 		}
 		for _, f := range flags {
@@ -880,8 +992,17 @@ func main() {
 	fmt.Println("Starting Spore CLI")
 	fmt.Println("Type (h)elp for list of commands.")
 
-	client := spore.New(appId).
-		WithDefaultErrorHandler()
+	client = spore.New(appId)
+
+	// Don't use WithDefaultErrorHandler(): it writes straight to stdout with
+	// plain fmt.Printf, bypassing outputMutex and never redrawing the prompt.
+	// Since parse errors arrive on the listen goroutine while readLine is
+	// blocked in raw mode, that corrupts the display and makes the shell
+	// look hung. Route through printAbovePrompt instead, like every other
+	// inbound message.
+	client.OnParseError(func(code, what, raw string) {
+		printAbovePrompt("[parse error] " + code + ": " + what + "\r\n  raw: " + raw)
+	})
 
 	// // When the hub routes cli.echo back to us, print the received expression
 	// // and send the reply.
@@ -899,7 +1020,7 @@ func main() {
 		printPublishMessage(p)
 	})
 
-	status := "disconnected"
+	status = "disconnected"
 
 	fmt.Println("Connecting to socket.")
 	if err := client.Connect(); err != nil {
@@ -975,7 +1096,7 @@ func main() {
 
 		case "s":
 			fmt.Println("SPORE help...")
-			input = "SPORE.help"
+			input = "help"
 		}
 
 		//

@@ -18,3 +18,4 @@ launch: auto
 api: []
 topics: []
 permissions: []
+errors: []

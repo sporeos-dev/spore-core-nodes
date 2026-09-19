@@ -7,6 +7,7 @@ id: dev.sporeos.log
 name: Spore Log
 description: "Persistent rolling file logger. Writes all hub witness traffic unfiltered to the system log directory (macOS: /Library/Logs/spore-os/spore.log), rotating at 10 MB."
 trust: system
+namespace: spore
 
 schema: SPORE/v0d2
 version: 0.2.0

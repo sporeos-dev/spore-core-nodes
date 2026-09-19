@@ -6,7 +6,7 @@
 id: dev.sporeos.shell
 name: Spore Shell
 description: An interactive shell (REPL) for sending commands to the Spore-OS ecosystem.
-trust: standard
+trust: system
 
 schema: SPORE/v0d2
 version: 0.2.0

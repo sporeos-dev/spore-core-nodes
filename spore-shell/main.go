@@ -59,8 +59,16 @@ var status = "disconnected"
 // pendingConfirm holds an incoming "confirm" request while we wait for the
 // user to type y/n at the prompt. Guarded by pendingConfirmMu since it is
 // set from the listen goroutine (OnRequest) and read/cleared from main().
+// done is closed by main() once the response is sent, releasing the
+// OnRequest callback that's blocked holding req alive; this also means a
+// second incoming confirm can't be dispatched until the first is answered.
+type pendingConfirmState struct {
+	req  *request.Request
+	done chan struct{}
+}
+
 var pendingConfirmMu sync.Mutex
-var pendingConfirm *request.Request
+var pendingConfirm *pendingConfirmState
 
 // sendHint sends a hint command with the full typed text, the cursor
 // position (in runes), and an eol flag when the cursor is at the end of the line.
@@ -105,6 +113,13 @@ func printAbovePrompt(msg string) {
 			fmt.Printf("\033[%dD", back)
 		}
 	}
+}
+
+// printLine writes a terminal line with an explicit carriage return before
+// newline, which is required while the terminal is in raw input mode.
+func printLine(args ...any) {
+	line := fmt.Sprintln(args...)
+	fmt.Print(line[:len(line)-1] + "\r\n")
 }
 
 // redrawInputLine redraws the text portion of the current input line and
@@ -998,6 +1013,13 @@ const confirmRespondPrompt = "  [respond][y/N]>: "
 // pendingConfirm, the body/lines are printed as an indented block, and the
 // confirmRespondPrompt is shown in place of the normal shell prompt until
 // the user answers.
+//
+// This blocks until main() answers and closes done. That's intentional: the
+// request handle this holds is only valid for the lifetime of this call, and
+// blocking is what keeps it alive across the wait. It also means the listen
+// loop can't dispatch a second confirm until this one is resolved, so
+// concurrent confirms are naturally serialized rather than clobbering each
+// other in the single pendingConfirm slot.
 func handleIncomingRequest(r *request.Request) {
 	if !strings.HasSuffix(r.Command(), "confirm") {
 		return
@@ -1010,8 +1032,9 @@ func handleIncomingRequest(r *request.Request) {
 		}
 	}
 
+	done := make(chan struct{})
 	pendingConfirmMu.Lock()
-	pendingConfirm = r
+	pendingConfirm = &pendingConfirmState{req: r, done: done}
 	pendingConfirmMu.Unlock()
 
 	// Switch to the respond prompt so it redraws in place of whatever the
@@ -1023,6 +1046,8 @@ func handleIncomingRequest(r *request.Request) {
 	outputMutex.Unlock()
 
 	printAbovePrompt(strings.Join(lines, "\r\n"))
+
+	<-done
 }
 
 // parseConfirmLines splits a Spore array value (e.g. ["what", "who"]) into
@@ -1048,8 +1073,9 @@ func parseConfirmLines(raw string) []string {
 
 func main() {
 
-	fmt.Println("Starting Spore CLI")
-	fmt.Println("Type (h)elp for list of commands.")
+	printLine("Starting Spore CLI")
+	printLine("Type (h)elp for list of commands.")
+	printLine("Hit <tab> while typing a command for more information...")
 
 	client = spore.New(appId)
 
@@ -1079,9 +1105,9 @@ func main() {
 
 	status = "disconnected"
 
-	fmt.Println("Connecting to socket.")
+	printLine("Connecting to socket.")
 	if err := client.Connect(); err != nil {
-		fmt.Println("Connection failed:", err.Error())
+		printLine("Connection failed:", err.Error())
 	} else {
 		status = "connected"
 		go client.Listen()
@@ -1106,7 +1132,7 @@ func main() {
 			break MainLoop
 		}
 		if err != nil {
-			fmt.Println("Error reading input:", err.Error())
+			printLine("Error reading input:", err.Error())
 			continue
 		}
 
@@ -1121,15 +1147,16 @@ func main() {
 
 		if pc != nil {
 			answer := strings.ToLower(strings.TrimSpace(input))
-			resp := response.New(pc.Command(), pc.Handle())
+			resp := response.New(pc.req.Command(), pc.req.Handle())
 			if answer == "y" || answer == "yes" {
 				resp = resp.WithFlag("yes")
 			} else {
 				resp = resp.WithFlag("no")
 			}
 			if err := client.SendResponse(resp); err != nil {
-				fmt.Println("Send error:", err.Error())
+				printLine("Send error:", err.Error())
 			}
+			close(pc.done)
 			continue
 		}
 
@@ -1143,28 +1170,28 @@ func main() {
 
 		// help
 		case "h":
-			fmt.Println("Commands:")
-			fmt.Println(" - (h)elp")
-			fmt.Println(" - (q)uit")
-			fmt.Println(" - (c)onnect")
-			fmt.Println(" - (d)isconnect")
-			fmt.Println(" - (s)pore help")
+			printLine("Commands:")
+			printLine(" - (h)elp")
+			printLine(" - (q)uit")
+			printLine(" - (c)onnect")
+			printLine(" - (d)isconnect")
+			printLine(" - <tab> for more information...")
 			continue
 
 		// quit
 		case "q":
-			fmt.Println("Quitting...")
+			printLine("Quitting...")
 			break MainLoop
 
 		// connect
 		case "c":
-			fmt.Println("Connecting...")
+			printLine("Connecting...")
 			if status == "connected" {
-				fmt.Println("Already connected")
+				printLine("Already connected")
 				continue
 			}
 			if err := client.Connect(); err != nil {
-				fmt.Println("Failed to connect:", err.Error())
+				printLine("Failed to connect:", err.Error())
 				continue
 			}
 			status = "connected"
@@ -1173,9 +1200,9 @@ func main() {
 
 		// disconnect
 		case "d":
-			fmt.Println("Disconnecting...")
+			printLine("Disconnecting...")
 			if status == "disconnected" {
-				fmt.Println("Not connected")
+				printLine("Not connected")
 				continue
 			}
 			client.Disconnect()
@@ -1183,7 +1210,7 @@ func main() {
 			continue
 
 		case "s":
-			fmt.Println("SPORE help...")
+			printLine("SPORE help...")
 			input = "help"
 		}
 
@@ -1191,7 +1218,7 @@ func main() {
 		// send command to the hub
 		//
 		if status == "disconnected" {
-			fmt.Println("Not connected")
+			printLine("Not connected")
 			continue
 		}
 
@@ -1200,7 +1227,7 @@ func main() {
 		}
 
 		if err := client.SendRaw(input); err != nil {
-			fmt.Println("Send error:", err.Error())
+			printLine("Send error:", err.Error())
 		}
 	}
 
@@ -1209,5 +1236,5 @@ func main() {
 	// application
 	//
 	client.Disconnect()
-	fmt.Println("Exit complete")
+	printLine("Exit complete")
 }

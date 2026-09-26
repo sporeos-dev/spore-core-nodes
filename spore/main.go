@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,13 +30,12 @@ func main() {
 	}
 
 	// "open <node-id>" subcommand → run node in the foreground of this terminal.
-	// "open <node-id> trace" to pass in the trace boolean to print outputs in the client libraries
 	if args[0] == "open" {
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: spore open <node-id>")
 			os.Exit(1)
 		}
-		runNode(args[1], slices.Contains(args, "trace"))
+		runNode(args[1])
 		return
 	}
 
@@ -106,7 +104,7 @@ func printHelp() {
 
 // runNode queries the hub for a node's binary path via help and
 // replaces this process with that binary, running it in the foreground.
-func runNode(nodeID string, trace bool) {
+func runNode(nodeID string) {
 	client := spore.New(appId).
 		WithDefaultErrorHandler()
 
@@ -155,9 +153,6 @@ func runNode(nodeID string, trace bool) {
 			exe = unquoted
 		}
 		args := []string{nodeID}
-		if trace {
-			args = append(args, "trace")
-		}
 		if err := syscall.Exec(exe, args, os.Environ()); err != nil {
 			fmt.Fprintln(os.Stderr, "exec failed:", err.Error())
 			client.Disconnect()

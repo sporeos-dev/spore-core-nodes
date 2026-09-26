@@ -13,7 +13,6 @@ import (
 	"spore-shell/internal/utilities"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
 	"github.com/sporeos-dev/spore-client-libs/spore_go/publish"
@@ -25,9 +24,6 @@ import (
 var errInterrupt = errors.New("interrupt")
 
 const appId = "dev.sporeos.shell"
-
-// defaultTimeoutMs is used for subscribe/unsubscribe hub handshakes.
-const defaultTimeoutMs = 30_000
 
 var outputMutex sync.Mutex
 
@@ -46,9 +42,6 @@ var inputCursor int
 
 // history stores previously entered non-empty commands.
 var history []string
-
-// handleCounter generates unique handle tokens for subscribe/unsubscribe requests.
-var handleCounter atomic.Int64
 
 // client is the active Spore client connection.
 var client *spore.Client
@@ -992,16 +985,6 @@ func printPublishMessage(p *publish.Publish) {
 	}
 	lines = append(lines, "")
 	printAbovePrompt(strings.Join(lines, "\r\n"))
-}
-
-// extractTopicArg extracts the value of topic=<value> from a command string.
-func extractTopicArg(cmd string) string {
-	for _, field := range strings.Fields(cmd) {
-		if strings.HasPrefix(field, "topic=") {
-			return strings.TrimPrefix(field, "topic=")
-		}
-	}
-	return ""
 }
 
 // confirmRespondPrompt is the fixed prompt shown while a confirm request is

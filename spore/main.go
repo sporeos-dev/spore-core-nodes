@@ -21,9 +21,6 @@ import (
 
 const appId = "dev.sporeos.spore"
 
-// defaultTimeoutMs is the maximum time to wait for a response.
-const defaultTimeoutMs = 30_000
-
 func main() {
 	args := os.Args[1:]
 
@@ -277,7 +274,7 @@ func parseRespArgs(resp *response.Response) map[string]string {
 				v = v[1 : len(v)-1]
 			}
 			args[kv[0]] = v
-		} else if skipFlags[f] || strings.HasPrefix(f, "~") {
+		} else if skipFlags[f] {
 			continue
 		}
 	}

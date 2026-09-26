@@ -41,7 +41,3 @@ var count int = 0
 func setCount(c int) {
 	count = c
 }
-
-func getCount() int {
-	return count
-}

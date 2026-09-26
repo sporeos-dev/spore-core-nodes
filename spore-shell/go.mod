@@ -7,6 +7,6 @@ require (
 	golang.org/x/term v0.41.0
 )
 
-require golang.org/x/sys v0.42.0 // indirect
+require golang.org/x/sys v0.44.0 // indirect
 
 replace github.com/sporeos-dev/spore-client-libs/spore_go => ../../spore-client-libs/spore_go

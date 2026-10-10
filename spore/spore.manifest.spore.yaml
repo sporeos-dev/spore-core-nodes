@@ -5,7 +5,7 @@
 
 id: dev.sporeos.spore
 name: Spore
-description: One-off command tool. Sends a single command to the hub and prints the response.
+description: One-off command tool. Sends a single command to the hub and prints the response. Spore from the terminal injects the current working directory into every command.
 trust: system
 
 schema: SPORE/v0d2

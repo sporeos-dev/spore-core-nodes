@@ -269,8 +269,9 @@ func longestCommonPrefix(strs []string) string {
 //
 // Arrow keys:  ↑ / ↓  scroll through history; ← / → move the cursor.
 // Editing:     Backspace deletes the character before the cursor.
-//              Ctrl+A / Ctrl+E jump to the beginning / end of the line.
-//              Ctrl+C cancels the current line (returns "").
+//
+//	Ctrl+A / Ctrl+E jump to the beginning / end of the line.
+//	Ctrl+C cancels the current line (returns "").
 //
 // Raw mode is automatically restored when the function returns, so normal
 // fmt.Println calls in main() between prompts work correctly.
@@ -551,6 +552,13 @@ func formatJSONLines(v interface{}, indent string) []string {
 // - lines: indented display lines for list/object/multiline items if isComplex.
 // - warning: an optional warning string if quotes or brackets were unmatched.
 func parseValue(v string, indent string) (isComplex bool, singleVal string, lines []string, warning string) {
+	if strings.Contains(v, "\n") {
+		for _, line := range strings.Split(v, "\n") {
+			lines = append(lines, indent+line)
+		}
+		return true, "", lines, ""
+	}
+
 	raw := strings.TrimSpace(v)
 
 	// Check for unmatched outer quotes or brackets.
@@ -877,7 +885,7 @@ func parseRespArgs(resp *response.Response) (map[string]string, []string) {
 			if skipArgs[kv[0]] {
 				continue
 			}
-			v := kv[1]
+			v := unwrapBlockValue(kv[1])
 			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
 				v = v[1 : len(v)-1]
 			}
@@ -889,17 +897,52 @@ func parseRespArgs(resp *response.Response) (map[string]string, []string) {
 	return args, flags
 }
 
+// unwrapBlockValue removes a block literal's protocol delimiters while
+// preserving all content lines, including intentional blank lines.
+func unwrapBlockValue(value string) string {
+	if !strings.HasPrefix(value, "<<") {
+		return value
+	}
+
+	value = value[2:]
+	switch {
+	case strings.HasPrefix(value, "\r\n"):
+		value = value[2:]
+	case strings.HasPrefix(value, "\n"):
+		value = value[1:]
+	}
+	switch {
+	case strings.HasSuffix(value, "\r\n>>"):
+		return value[:len(value)-4]
+	case strings.HasSuffix(value, "\n>>"):
+		return value[:len(value)-3]
+	default:
+		return value
+	}
+}
+
 // splitFields splits a Spore wire string by spaces, respecting quoted strings
-// and nested [array] / {object} tokens.
+// nested [array] / {object} tokens, and multiline block values.
 func splitFields(s string) []string {
 	var fields []string
 	var current strings.Builder
 	inDouble := false
+	inBlock := false
+	blockLineStart := false
 	depth := 0
 
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
 		switch {
+		case inBlock && blockLineStart && strings.HasPrefix(s[i:], ">>") &&
+			(i+2 == len(s) || s[i+2] == ' ' || s[i+2] == '\r' || s[i+2] == '\n'):
+			current.WriteString(">>")
+			i++
+			inBlock = false
+			blockLineStart = false
+		case inBlock:
+			current.WriteByte(ch)
+			blockLineStart = ch == '\n'
 		case ch == '"' && !inDouble:
 			inDouble = true
 			current.WriteByte(ch)
@@ -916,13 +959,16 @@ func splitFields(s string) []string {
 		case (ch == ']' || ch == '}') && !inDouble:
 			depth--
 			current.WriteByte(ch)
-		case ch == ' ' && !inDouble && depth == 0:
+		case (ch == ' ' || ch == '\r' || ch == '\n') && !inDouble && depth == 0:
 			if current.Len() > 0 {
 				fields = append(fields, current.String())
 				current.Reset()
 			}
 		default:
 			current.WriteByte(ch)
+			if strings.HasSuffix(current.String(), "=<<") {
+				inBlock = true
+			}
 		}
 	}
 	if current.Len() > 0 {
@@ -1096,7 +1142,7 @@ func main() {
 		go client.Listen()
 	}
 
-	MainLoop:
+MainLoop:
 	for {
 
 		//

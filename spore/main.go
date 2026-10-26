@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,6 +112,11 @@ func printHelp() {
 // runNode queries the hub for a node's binary path via help and
 // replaces this process with that binary, running it in the foreground.
 func runNode(nodeID string) {
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(os.Stderr, "\"spore open %s\" is not supported on Windows. Open interactive Spore nodes from the Start menu.\n", nodeID)
+		os.Exit(1)
+	}
+
 	client := spore.New(appId).
 		WithDefaultErrorHandler()
 

@@ -11,6 +11,7 @@ trust: system
 schema: SPORE/v0d2
 version: 0.2.0
 app: ./spore-shell
+launch: lazy
 
 api: 
   - name: confirm

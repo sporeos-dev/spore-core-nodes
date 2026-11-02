@@ -39,6 +39,7 @@ var waitingForInput bool
 // printAbovePrompt reads these to redraw the user's partially-typed text.
 var inputBuf []rune
 var inputCursor int
+var inputConfirm *pendingConfirmState
 
 // history stores previously entered non-empty commands.
 var history []string
@@ -275,24 +276,38 @@ func longestCommonPrefix(strs []string) string {
 //
 // Raw mode is automatically restored when the function returns, so normal
 // fmt.Println calls in main() between prompts work correctly.
-func readLine(prompt string) (string, error) {
-	fd := int(os.Stdin.Fd())
-	// stdin is verified to be a tty in main() before the input loop starts,
-	// so MakeRaw should never fail here in normal operation.
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return "", fmt.Errorf("stdin is not a terminal: %w", err)
-	}
-	defer term.Restore(fd, oldState)
-
-	// Initialise shared state before printing the prompt.
+func startInput(prompt string) {
+	pendingConfirmMu.Lock()
 	outputMutex.Lock()
+	inputConfirm = pendingConfirm
+	if inputConfirm != nil {
+		prompt = confirmRespondPrompt
+	}
 	currentPrompt = prompt
 	inputBuf = nil
 	inputCursor = 0
 	waitingForInput = true
 	fmt.Print(prompt)
 	outputMutex.Unlock()
+	pendingConfirmMu.Unlock()
+}
+
+func finishInputLocked() (string, *pendingConfirmState) {
+	waitingForInput = false
+	return string(inputBuf), inputConfirm
+}
+
+func readLine(prompt string) (string, *pendingConfirmState, error) {
+	fd := int(os.Stdin.Fd())
+	// stdin is verified to be a tty in main() before the input loop starts,
+	// so MakeRaw should never fail here in normal operation.
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return "", nil, fmt.Errorf("stdin is not a terminal: %w", err)
+	}
+	defer term.Restore(fd, oldState)
+
+	startInput(prompt)
 
 	// histIdx points one past the end of history when the user hasn't
 	// navigated yet ("current" position).
@@ -306,7 +321,7 @@ func readLine(prompt string) (string, error) {
 			outputMutex.Lock()
 			waitingForInput = false
 			outputMutex.Unlock()
-			return "", err
+			return "", nil, err
 		}
 
 		// Escape sequences (arrow keys etc.) are handled outside the main
@@ -365,11 +380,10 @@ func readLine(prompt string) (string, error) {
 		outputMutex.Lock()
 		switch b[0] {
 		case '\r', '\n': // Enter — return the line.
-			waitingForInput = false
-			result := string(inputBuf)
+			result, confirm := finishInputLocked()
 			fmt.Print("\r\n")
 			outputMutex.Unlock()
-			return result, nil
+			return result, confirm, nil
 
 		case 0x7f, 0x08: // Backspace — delete character before cursor.
 			if inputCursor > 0 {
@@ -392,7 +406,7 @@ func readLine(prompt string) (string, error) {
 			waitingForInput = false
 			fmt.Print("^C\r\n")
 			outputMutex.Unlock()
-			return "", errInterrupt
+			return "", nil, errInterrupt
 
 		case 0x09: // Tab — path completion or hint fallback.
 			// Analyse the buffer while the mutex is still held (no mutex calls
@@ -1049,6 +1063,18 @@ const confirmRespondPrompt = "  [respond][y/N]>: "
 // loop can't dispatch a second confirm until this one is resolved, so
 // concurrent confirms are naturally serialized rather than clobbering each
 // other in the single pendingConfirm slot.
+func startConfirmation(pc *pendingConfirmState) {
+	pendingConfirmMu.Lock()
+	outputMutex.Lock()
+	pendingConfirm = pc
+	inputConfirm = pc
+	currentPrompt = confirmRespondPrompt
+	inputBuf = nil
+	inputCursor = 0
+	outputMutex.Unlock()
+	pendingConfirmMu.Unlock()
+}
+
 func handleIncomingRequest(r *request.Request) {
 	if !strings.HasSuffix(r.Command(), "confirm") {
 		return
@@ -1062,18 +1088,7 @@ func handleIncomingRequest(r *request.Request) {
 	}
 
 	done := make(chan struct{})
-	pendingConfirmMu.Lock()
-	pendingConfirm = &pendingConfirmState{req: r, done: done}
-	pendingConfirmMu.Unlock()
-
-	// Switch to the respond prompt so it redraws in place of whatever the
-	// terminal was previously displaying.
-	outputMutex.Lock()
-	currentPrompt = confirmRespondPrompt
-	inputBuf = nil
-	inputCursor = 0
-	outputMutex.Unlock()
-
+	startConfirmation(&pendingConfirmState{req: r, done: done})
 	printAbovePrompt(strings.Join(lines, "\r\n"))
 
 	<-done
@@ -1149,14 +1164,7 @@ MainLoop:
 		// get next line
 		//
 		prompt := fmt.Sprintf("[%s]>: ", status)
-		pendingConfirmMu.Lock()
-		hasPendingConfirm := pendingConfirm != nil
-		if hasPendingConfirm {
-			prompt = confirmRespondPrompt
-		}
-		pendingConfirmMu.Unlock()
-
-		input, err := readLine(prompt)
+		input, pc, err := readLine(prompt)
 		if err == errInterrupt {
 			break MainLoop
 		}
@@ -1169,12 +1177,12 @@ MainLoop:
 		// answer a pending confirm request, if any, instead of treating
 		// this line as a normal shell/hub command
 		//
-		pendingConfirmMu.Lock()
-		pc := pendingConfirm
-		pendingConfirm = nil
-		pendingConfirmMu.Unlock()
-
 		if pc != nil {
+			pendingConfirmMu.Lock()
+			if pendingConfirm == pc {
+				pendingConfirm = nil
+			}
+			pendingConfirmMu.Unlock()
 			answer := strings.ToLower(strings.TrimSpace(input))
 			resp := response.New(pc.req.Command(), pc.req.Handle())
 			if answer == "y" || answer == "yes" {

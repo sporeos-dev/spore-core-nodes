@@ -1,14 +1,14 @@
 # Copyright 2026 Matt Harrison
 # SPDX-License-Identifier: Apache-2.0
 
-# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d2/spore.manifest.v0.schema.yaml
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d3/spore.manifest.v0.schema.yaml
 
 id: dev.sporeos.spore
 name: Spore
 description: One-off command tool. Sends a single command to the hub and prints the response. Spore from the terminal injects the current working directory into every command.
 trust: system
 
-schema: SPORE/v0d2
+schema: SPORE/v0d3
 version: 0.2.0
 app: ./spore
 launch: lazy
@@ -16,4 +16,3 @@ launch: lazy
 api: []
 topics: []
 permissions: []
-errors: []

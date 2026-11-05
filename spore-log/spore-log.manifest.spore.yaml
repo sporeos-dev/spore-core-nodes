@@ -1,7 +1,7 @@
 # Copyright 2026 Matt Harrison
 # SPDX-License-Identifier: Apache-2.0
 
-# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d2/spore.manifest.v0.schema.yaml
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d3/spore.manifest.v0.schema.yaml
 
 id: dev.sporeos.log
 name: Spore Log
@@ -9,14 +9,13 @@ description: "Persistent rolling file logger. Writes all hub witness traffic unf
 trust: system
 namespace: spore
 
-schema: SPORE/v0d2
+schema: SPORE/v0d3
 version: 0.2.0
 app: ./spore-log
-
-witness: true
 launch: auto
+roles:
+  - witness
 
 api: []
 topics: []
 permissions: []
-errors: []

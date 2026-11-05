@@ -1,18 +1,19 @@
 # Copyright 2026 Matt Harrison
 # SPDX-License-Identifier: Apache-2.0
 
-# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d2/spore.manifest.v0.schema.yaml
+# yaml-language-server: $schema=../../spore-os-protocol/versions/v0d3/spore.manifest.v0.schema.yaml
 
 id: dev.sporeos.witness
 name: Spore Witness
 description: Live hub traffic viewer. Outputs all witness copies to stdout with colour-coded kind labels for active debugging.
 trust: system
 
-schema: SPORE/v0d2
+schema: SPORE/v0d3
 version: 0.2.0
 app: ./spore-witness
 launch: lazy
-witness: true
+roles:
+  - witness
 
 api: []
 topics: []

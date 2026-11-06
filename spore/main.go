@@ -199,10 +199,6 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 	fmt.Println()
 	switch {
 	case rerr != nil:
-		errKind := "error"
-		if rerr.Flag("custom_error") {
-			errKind = "custom_error"
-		}
 		origin := ""
 		switch {
 		case rerr.Flag("node_error"):
@@ -214,7 +210,7 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 		case rerr.Flag("capture_error"):
 			origin = "capture_error"
 		}
-		fmt.Fprintf(os.Stderr, "  [%s]%s\n", errKind, handleStr)
+		fmt.Fprintf(os.Stderr, "  [error]%s\n", handleStr)
 		fmt.Fprintf(os.Stderr, "  %s // %s\n", subject, capture)
 		fmt.Fprintln(os.Stderr, "  ----------")
 		for _, l := range wrapKeyValue("  ", "code", rerr.Code()) {
@@ -223,9 +219,40 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 		for _, l := range wrapKeyValue("  ", "what", rerr.What()) {
 			fmt.Fprintln(os.Stderr, l)
 		}
-		if origin != "" {
-			fmt.Fprintln(os.Stderr, "  origin:", origin)
+		var details []string
+		for _, key := range rerr.Args() {
+			if key == "code" || key == "what" || key == "capture" || key == "cast" {
+				continue
+			}
+			value, _ := rerr.Arg(key)
+			if strings.Contains(value, "\n") {
+				details = append(details, "  "+key+":")
+				for _, line := range strings.Split(value, "\n") {
+					details = append(details, "    "+line)
+				}
+			} else {
+				details = append(details, wrapKeyValue("  ", key, value)...)
+			}
 		}
+		if origin != "" {
+			details = append(details, "  origin: "+origin)
+		}
+		for _, flag := range rerr.Flags() {
+			if flag == "error" || flag == origin {
+				continue
+			}
+			details = append(details, "  "+flag)
+		}
+		if len(details) > 0 {
+			fmt.Fprintln(os.Stderr, "  ----------")
+			for _, line := range details {
+				fmt.Fprintln(os.Stderr, line)
+			}
+		}
+
+	case resp != nil && resp.Flag("cancelled"):
+		fmt.Printf("  [cancelled]%s\n", handleStr)
+		fmt.Printf("  %s // %s\n", subject, capture)
 
 	case resp != nil && resp.Flag("ok"):
 		fmt.Printf("  [ok]%s\n", handleStr)
@@ -253,9 +280,6 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 			}
 		}
 
-	case resp != nil && resp.Flag("cancelled"):
-		fmt.Printf("  [cancelled]%s\n", handleStr)
-		fmt.Printf("  %s // %s\n", subject, capture)
 	}
 	fmt.Println()
 }
@@ -267,7 +291,7 @@ func parseRespArgs(resp *response.Response) map[string]string {
 	args := make(map[string]string)
 	skipArgs := map[string]bool{"capture": true, "code": true, "what": true, "cast": true}
 	skipFlags := map[string]bool{
-		"ok": true, "cancelled": true, "error": true, "custom_error": true,
+		"ok": true, "cancelled": true, "error": true,
 		"node_error": true, "spore_error": true, "cast_error": true, "capture_error": true,
 	}
 	for _, f := range fields[1:] { // skip the ~handle:command token

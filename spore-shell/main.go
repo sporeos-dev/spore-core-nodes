@@ -776,10 +776,6 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 
 	switch {
 	case rerr != nil:
-		errKind := "error"
-		if rerr.Flag("custom_error") {
-			errKind = "custom_error"
-		}
 		origin := ""
 		switch {
 		case rerr.Flag("node_error"):
@@ -791,20 +787,43 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 		case rerr.Flag("capture_error"):
 			origin = "capture_error"
 		}
-		lines = append(lines, "  ["+errKind+"]"+handleStr)
+		lines = append(lines, "  [error]"+handleStr)
 		lines = append(lines, subjectLine)
 		lines = append(lines, "  ----------")
 		lines = append(lines, "  code: "+rerr.Code())
-		if module := rerr.ArgIf("module", ""); module != "" {
-			lines = append(lines, "  module: "+module)
-		}
 		lines = append(lines, "  what: "+rerr.What())
-		if extra := rerr.ArgIf("extra", ""); extra != "" && extra != "[]" {
-			lines = append(lines, "  extra: "+extra)
+		var details []string
+		for _, key := range rerr.Args() {
+			if key == "code" || key == "what" || key == "capture" || key == "cast" {
+				continue
+			}
+			value, _ := rerr.Arg(key)
+			if strings.Contains(value, "\n") {
+				details = append(details, "  "+key+":")
+				for _, line := range strings.Split(value, "\n") {
+					details = append(details, "    "+line)
+				}
+			} else {
+				details = append(details, wrapKeyValue("  ", key, value)...)
+			}
 		}
 		if origin != "" {
-			lines = append(lines, "  origin: "+origin)
+			details = append(details, "  origin: "+origin)
 		}
+		for _, flag := range rerr.Flags() {
+			if flag == "error" || flag == origin {
+				continue
+			}
+			details = append(details, "  "+flag)
+		}
+		if len(details) > 0 {
+			lines = append(lines, "  ----------")
+			lines = append(lines, details...)
+		}
+
+	case resp != nil && resp.Flag("cancelled"):
+		lines = append(lines, "  [cancelled]"+handleStr)
+		lines = append(lines, subjectLine)
 
 	case resp != nil && resp.Flag("ok"):
 		lines = append(lines, "  [ok]"+handleStr)
@@ -840,9 +859,6 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 			}
 		}
 
-	case resp != nil && resp.Flag("cancelled"):
-		lines = append(lines, "  [cancelled]"+handleStr)
-		lines = append(lines, subjectLine)
 	}
 
 	lines = append(lines, "")
@@ -890,7 +906,7 @@ func parseRespArgs(resp *response.Response) (map[string]string, []string) {
 	var flags []string
 	skipArgs := map[string]bool{"capture": true, "code": true, "what": true, "cast": true}
 	skipFlags := map[string]bool{
-		"ok": true, "cancelled": true, "error": true, "custom_error": true,
+		"ok": true, "cancelled": true, "error": true,
 		"node_error": true, "spore_error": true, "cast_error": true, "capture_error": true,
 	}
 	for _, f := range fields[1:] { // skip the ~handle:command token

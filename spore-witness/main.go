@@ -18,13 +18,13 @@ const appId = "dev.sporeos.witness"
 
 // ANSI color codes for terminal output.
 const (
-	colorReset     = "\033[0m"
-	colorGray      = "\033[90m"
-	colorGreen     = "\033[92m" // bright green
-	colorMagenta   = "\033[35m" // magenta
-	colorBlue      = "\033[34m"
-	colorCyan      = "\033[36m"
-	colorRed       = "\033[91m" // bright red
+	colorReset   = "\033[0m"
+	colorGray    = "\033[90m"
+	colorGreen   = "\033[92m" // bright green
+	colorMagenta = "\033[35m" // magenta
+	colorCyan    = "\033[36m"
+	colorYellow  = "\033[93m" // bright yellow
+	colorRed     = "\033[91m" // bright red
 )
 
 func main() {
@@ -32,11 +32,11 @@ func main() {
 		WithDefaultErrorHandler()
 
 	client.OnWitness(func(w *witness.Witness) {
-		sporeTimeStr := w.ArgIf("spore_time", "0")
+		sporeTimeStr := w.ArgIf("spore.time", "0")
 		sporeTimeMs, _ := strconv.ParseInt(sporeTimeStr, 10, 64)
 		t := time.UnixMilli(sporeTimeMs).Local().Format("15:04:05.000")
 		color, label := kindMeta(w)
-		if w.Flag("spore_node") && w.ArgIf("cast", "") != "" {
+		if w.Flag("spore.node") && w.ArgIf("cast", "") != "" {
 			label = fmt.Sprintf("NOD(%s)", w.ArgIf("cast", ""))
 		}
 		body := w.ArgIf("body", w.Body())
@@ -89,16 +89,17 @@ func sanitizeForDisplay(s string) string {
 }
 
 // kindMeta returns the ANSI color and short label for a witness kind.
-func kindMeta(w *witness.Witness) (string, string) {	switch {
-	case w.Flag("spore_incoming"):
+func kindMeta(w *witness.Witness) (string, string) {
+	switch {
+	case w.Flag("spore.incoming"):
 		return colorCyan, "IN "
-	case w.Flag("spore_outgoing"):
+	case w.Flag("spore.outgoing"):
 		return colorGreen, "OUT"
-	case w.Flag("spore_expanded"):
-		return colorBlue, "EXP"
-	case w.Flag("spore_event"):
-		return colorRed, "EVT"
-	case w.Flag("spore_node"):
+	case w.Flag("spore.event"):
+		return colorYellow, "EVT"
+	case w.Flag("spore.error"):
+		return colorRed, "ERR"
+	case w.Flag("spore.node"):
 		return colorMagenta, "NOD"
 	default:
 		return colorReset, "???"

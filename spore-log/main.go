@@ -137,7 +137,7 @@ func main() {
 		WithDefaultErrorHandler()
 
 	client.OnWitness(func(w *witness.Witness) {
-		sporeTimeStr := w.ArgIf("spore_time", "0")
+		sporeTimeStr := w.ArgIf("spore.time", "0")
 		sporeTimeMs, _ := strconv.ParseInt(sporeTimeStr, 10, 64)
 		t := time.UnixMilli(sporeTimeMs).UTC().Format("2006-01-02T15:04:05.000Z")
 		kind := kindLabel(w)
@@ -171,19 +171,17 @@ func main() {
 // kindLabel returns a fixed-width label for a witness kind.
 func kindLabel(w *witness.Witness) string {
 	switch {
-	case w.Flag("spore_incoming"):
+	case w.Flag("spore.incoming"):
 		return "IN "
-	case w.Flag("spore_outgoing"):
+	case w.Flag("spore.outgoing"):
 		return "OUT"
-	case w.Flag("spore_expanded"):
-		return "EXP"
-	case w.Flag("spore_event"):
+	case w.Flag("spore.event"):
 		return "EVT"
-	case w.Flag("spore_node"):
+	case w.Flag("spore.error"):
+		return "ERR"
+	case w.Flag("spore.node"):
 		return "NOD"
 	default:
 		return "???"
 	}
 }
-
-

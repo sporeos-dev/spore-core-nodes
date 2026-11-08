@@ -18,13 +18,14 @@ const appId = "dev.sporeos.witness"
 
 // ANSI color codes for terminal output.
 const (
-	colorReset   = "\033[0m"
-	colorGray    = "\033[90m"
-	colorGreen   = "\033[92m" // bright green
-	colorMagenta = "\033[35m" // magenta
-	colorCyan    = "\033[36m"
-	colorYellow  = "\033[93m" // bright yellow
-	colorRed     = "\033[91m" // bright red
+	colorReset    = "\033[0m"
+	colorGray     = "\033[90m"
+	colorGreen    = "\033[92m" // bright green
+	colorMagenta  = "\033[35m" // magenta
+	colorCyan     = "\033[36m"
+	colorDarkCyan = "\033[2;36m"
+	colorYellow   = "\033[93m" // bright yellow
+	colorRed      = "\033[91m" // bright red
 )
 
 func main() {
@@ -92,11 +93,11 @@ func sanitizeForDisplay(s string) string {
 func kindMeta(w *witness.Witness) (string, string) {
 	switch {
 	case w.Flag("spore.incoming"):
-		return colorCyan, "IN "
+		return colorGreen, "IN "
 	case w.Flag("spore.outgoing"):
-		return colorGreen, "OUT"
+		return colorYellow, "OUT"
 	case w.Flag("spore.event"):
-		return colorYellow, "EVT"
+		return colorCyan, "EVT"
 	case w.Flag("spore.error"):
 		return colorRed, "ERR"
 	case w.Flag("spore.node"):

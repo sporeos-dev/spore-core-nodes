@@ -109,8 +109,7 @@ func printHelp() {
 	fmt.Println()
 }
 
-// runNode queries the hub for a node's binary path via help and
-// replaces this process with that binary, running it in the foreground.
+// runNode queries the hub for a node's executable path and runs it in the foreground.
 func runNode(nodeID string) {
 	if runtime.GOOS == "windows" {
 		fmt.Fprintf(os.Stderr, "\"spore open %s\" is not supported on Windows. Open interactive Spore nodes from the Start menu.\n", nodeID)
@@ -133,13 +132,13 @@ func runNode(nodeID string) {
 			os.Exit(1)
 		}
 
-		exe, ok := resp.Arg("binary")
+		exe, ok := resp.Arg("path")
 		if !ok || strings.TrimSpace(exe) == "" {
 			fmt.Fprintf(os.Stderr, "hub returned no binary path for %s\n", nodeID)
 			client.Disconnect()
 			os.Exit(1)
 		}
-		exeChan <- strings.TrimSpace(exe)
+		exeChan <- exe
 	})
 
 	go func() {
@@ -151,7 +150,7 @@ func runNode(nodeID string) {
 		}
 	}()
 
-	err := client.SendRaw(fmt.Sprintf("dev.sporeos.SPORE.state body=%s ~s%04x", nodeID, rand.Intn(0x10000)))
+	err := client.SendRaw(fmt.Sprintf("dev.sporeos.SPORE.node.path node=%s ~s%04x", strconv.Quote(nodeID), rand.Intn(0x10000)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "send failed:", err.Error())
 		client.Disconnect()
@@ -161,9 +160,6 @@ func runNode(nodeID string) {
 	select {
 	case exe := <-exeChan:
 		client.Disconnect()
-		if unquoted, err := strconv.Unquote(exe); err == nil {
-			exe = unquoted
-		}
 		args := []string{nodeID}
 		if err := syscall.Exec(exe, args, os.Environ()); err != nil {
 			fmt.Fprintln(os.Stderr, "exec failed:", err.Error())

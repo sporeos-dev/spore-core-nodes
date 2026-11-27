@@ -77,13 +77,16 @@ func main() {
 	}
 	defer client.Disconnect()
 
-	err = client.SendRaw(cmd)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err.Error())
+	isErr := false
+	if client.OnStream(func(stream *spore.ResponseStream) {
+		if err := printStreamChunk(stream.Text()); err != nil {
+			fmt.Fprintln(os.Stderr, "stream output failed:", err)
+			isErr = true
+		}
+	}) == nil {
+		fmt.Fprintln(os.Stderr, "failed to register stream handler")
 		os.Exit(1)
 	}
-
-	isErr := false
 	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
 		if rerr != nil {
 			isErr = true
@@ -92,11 +95,22 @@ func main() {
 		client.Disconnect()
 	})
 
+	err = client.SendRaw(cmd)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err.Error())
+		os.Exit(1)
+	}
+
 	client.Listen()
 
 	if isErr {
 		os.Exit(1)
 	}
+}
+
+func printStreamChunk(text string) error {
+	_, err := fmt.Fprint(os.Stdout, text)
+	return err
 }
 
 // printHelp prints usage information for the spore tool.

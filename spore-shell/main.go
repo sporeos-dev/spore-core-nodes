@@ -41,6 +41,11 @@ var inputBuf []rune
 var inputCursor int
 var inputConfirm *pendingConfirmState
 
+// The saved terminal cursor marks the end of the last live chunk, above the prompt.
+var streamAtPrompt bool
+var streamHandle, streamField string
+var streamLastCR bool
+
 // history stores previously entered non-empty commands.
 var history []string
 
@@ -94,6 +99,7 @@ func sendHint(fullText string, cursor int) {
 func printAbovePrompt(msg string) {
 	outputMutex.Lock()
 	defer outputMutex.Unlock()
+	streamAtPrompt = false
 	// \r     — move to start of current line
 	// \033[K — erase to end of line
 	fmt.Print("\r\033[K")
@@ -105,6 +111,52 @@ func printAbovePrompt(msg string) {
 		back := len(inputBuf) - inputCursor
 		if back > 0 {
 			fmt.Printf("\033[%dD", back)
+		}
+	}
+}
+
+// printStreamChunk keeps adjacent chunks of the same field together while
+// leaving the editable prompt below the live output.
+func printStreamChunk(handle, field, text string) {
+	if text == "" {
+		return
+	}
+	outputMutex.Lock()
+	defer outputMutex.Unlock()
+
+	fmt.Print("\r\033[K")
+	continuing := waitingForInput && streamAtPrompt && streamHandle == handle && streamField == field
+	if continuing {
+		fmt.Print("\0338")
+	} else {
+		fmt.Printf("  [stream] ~%s %s\r\n", handle, field)
+		streamLastCR = false
+	}
+	var output strings.Builder
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' && !streamLastCR {
+			output.WriteByte('\r')
+		}
+		output.WriteByte(text[i])
+		streamLastCR = text[i] == '\r'
+	}
+	fmt.Print(output.String())
+
+	if waitingForInput {
+		streamAtPrompt = true
+		streamHandle, streamField = handle, field
+		fmt.Print("\0337")
+		if !strings.HasSuffix(text, "\n") {
+			fmt.Print("\r\n")
+		}
+		fmt.Print(currentPrompt, string(inputBuf))
+		if back := len(inputBuf) - inputCursor; back > 0 {
+			fmt.Printf("\033[%dD", back)
+		}
+	} else {
+		streamAtPrompt = false
+		if !strings.HasSuffix(text, "\n") {
+			fmt.Print("\r\n")
 		}
 	}
 }
@@ -287,6 +339,7 @@ func startInput(prompt string) {
 	inputBuf = nil
 	inputCursor = 0
 	waitingForInput = true
+	streamAtPrompt = false
 	fmt.Print(prompt)
 	outputMutex.Unlock()
 	pendingConfirmMu.Unlock()
@@ -294,6 +347,7 @@ func startInput(prompt string) {
 
 func finishInputLocked() (string, *pendingConfirmState) {
 	waitingForInput = false
+	streamAtPrompt = false
 	return string(inputBuf), inputConfirm
 }
 
@@ -320,6 +374,7 @@ func readLine(prompt string) (string, *pendingConfirmState, error) {
 		if err != nil {
 			outputMutex.Lock()
 			waitingForInput = false
+			streamAtPrompt = false
 			outputMutex.Unlock()
 			return "", nil, err
 		}
@@ -404,6 +459,7 @@ func readLine(prompt string) (string, *pendingConfirmState, error) {
 			inputBuf = nil
 			inputCursor = 0
 			waitingForInput = false
+			streamAtPrompt = false
 			fmt.Print("^C\r\n")
 			outputMutex.Unlock()
 			return "", nil, errInterrupt
@@ -986,6 +1042,7 @@ func startConfirmation(pc *pendingConfirmState) {
 	currentPrompt = confirmRespondPrompt
 	inputBuf = nil
 	inputCursor = 0
+	streamAtPrompt = false
 	outputMutex.Unlock()
 	pendingConfirmMu.Unlock()
 }
@@ -1053,6 +1110,13 @@ func main() {
 	client.OnRequest(func(r *request.Request) {
 		handleIncomingRequest(r)
 	})
+
+	if client.OnStream(func(stream *spore.ResponseStream) {
+		printStreamChunk(stream.Handle(), stream.Field(), stream.Text())
+	}) == nil {
+		printLine("Failed to register stream handler.")
+		os.Exit(1)
+	}
 
 	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
 		printResponse(resp, rerr)

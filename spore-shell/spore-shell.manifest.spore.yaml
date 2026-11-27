@@ -13,6 +13,9 @@ version: 0.2.0
 app: ./spore-shell
 launch: lazy
 
+roles:
+  - io
+
 api: 
   - name: confirm
     description: Confirm an action with the user.

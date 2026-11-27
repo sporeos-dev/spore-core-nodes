@@ -103,10 +103,38 @@ func TestStreamChunksPreserveSplitBytesAndCRLF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "\r\033[K  [stream] ~h output\r\n\xc3\0337\r\n> " +
-		"\r\033[K\0338\xa9\r\0337\r\n> " +
+	want := "\r\033[K  [stream] ~h output\r\né\r\0337\r\n> " +
 		"\r\033[K\0338\n\0337> "
 	if string(got) != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+
+	func TestIncompleteUTF8IsFlushedOnCompletion(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stdout
+		os.Stdout = w
+		waitingForInput = false
+		streamAtPrompt = false
+		t.Cleanup(func() {
+			os.Stdout = old
+			r.Close()
+			w.Close()
+		})
+		printStreamChunk("h", "output", "\xc3")
+		finishStreamChunks("h")
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "\r\033[K  [stream] ~h output\r\n�\r\n"
+		if string(got) != want {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
 	}
 }

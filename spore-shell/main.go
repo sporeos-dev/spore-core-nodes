@@ -13,6 +13,7 @@ import (
 	"spore-shell/internal/utilities"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	spore "github.com/sporeos-dev/spore-client-libs/spore_go"
 	"github.com/sporeos-dev/spore-client-libs/spore_go/publish"
@@ -45,6 +46,13 @@ var inputConfirm *pendingConfirmState
 var streamAtPrompt bool
 var streamHandle, streamField string
 var streamLastCR bool
+
+type streamKey struct {
+	handle string
+	field  string
+}
+
+var streamIncomplete = make(map[streamKey]string)
 
 // history stores previously entered non-empty commands.
 var history []string
@@ -124,15 +132,31 @@ func printStreamChunk(handle, field, text string) {
 	outputMutex.Lock()
 	defer outputMutex.Unlock()
 
-	fmt.Print("\r\033[K")
+	key := streamKey{handle, field}
+	text = streamIncomplete[key] + text
+	delete(streamIncomplete, key)
+	for i := 0; i < len(text); {
+		if !utf8.FullRuneInString(text[i:]) {
+			streamIncomplete[key] = text[i:]
+			text = text[:i]
+			break
+		}
+		_, size := utf8.DecodeRuneInString(text[i:])
+		i += size
+	}
+	if text == "" {
+		return
+	}
+
+	var output strings.Builder
+	output.WriteString("\r\033[K")
 	continuing := waitingForInput && streamAtPrompt && streamHandle == handle && streamField == field
 	if continuing {
-		fmt.Print("\0338")
+		output.WriteString("\0338")
 	} else {
-		fmt.Printf("  [stream] ~%s %s\r\n", handle, field)
+		fmt.Fprintf(&output, "  [stream] ~%s %s\r\n", handle, field)
 		streamLastCR = false
 	}
-	var output strings.Builder
 	for i := 0; i < len(text); i++ {
 		if text[i] == '\n' && !streamLastCR {
 			output.WriteByte('\r')
@@ -140,24 +164,43 @@ func printStreamChunk(handle, field, text string) {
 		output.WriteByte(text[i])
 		streamLastCR = text[i] == '\r'
 	}
-	fmt.Print(output.String())
 
 	if waitingForInput {
 		streamAtPrompt = true
 		streamHandle, streamField = handle, field
-		fmt.Print("\0337")
+		output.WriteString("\0337")
 		if !strings.HasSuffix(text, "\n") {
-			fmt.Print("\r\n")
+			output.WriteString("\r\n")
 		}
-		fmt.Print(currentPrompt, string(inputBuf))
+		output.WriteString(currentPrompt)
+		output.WriteString(string(inputBuf))
 		if back := len(inputBuf) - inputCursor; back > 0 {
-			fmt.Printf("\033[%dD", back)
+			fmt.Fprintf(&output, "\033[%dD", back)
 		}
 	} else {
 		streamAtPrompt = false
 		if !strings.HasSuffix(text, "\n") {
-			fmt.Print("\r\n")
+			output.WriteString("\r\n")
 		}
+	}
+	if _, err := fmt.Fprint(os.Stdout, output.String()); err != nil {
+		streamAtPrompt = false
+		fmt.Fprintln(os.Stderr, "stream output failed:", err)
+	}
+}
+
+func finishStreamChunks(handle string) {
+	outputMutex.Lock()
+	pending := make(map[streamKey]string)
+	for key, text := range streamIncomplete {
+		if handle == "" || key.handle == handle {
+			pending[key] = text
+			delete(streamIncomplete, key)
+		}
+	}
+	outputMutex.Unlock()
+	for key, text := range pending {
+		printStreamChunk(key.handle, key.field, strings.ToValidUTF8(text, "\xef\xbf\xbd"))
 	}
 }
 
@@ -1119,6 +1162,11 @@ func main() {
 	}
 
 	client.OnResponse(func(resp *response.Response, rerr *response.ResponseError) {
+		if rerr != nil {
+			finishStreamChunks(rerr.Handle())
+		} else if resp != nil {
+			finishStreamChunks(resp.Handle())
+		}
 		printResponse(resp, rerr)
 	})
 
@@ -1222,6 +1270,7 @@ MainLoop:
 				continue
 			}
 			client.Disconnect()
+			finishStreamChunks("")
 			status = "disconnected"
 			continue
 
@@ -1252,5 +1301,6 @@ MainLoop:
 	// application
 	//
 	client.Disconnect()
+	finishStreamChunks("")
 	printLine("Exit complete")
 }

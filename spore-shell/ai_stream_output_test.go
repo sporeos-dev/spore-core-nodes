@@ -47,15 +47,15 @@ func TestStreamChunksKeepPromptAndFinalResponse(t *testing.T) {
 	}
 	prompt := "[p]>: typing\033[3D"
 	printStreamChunk("h", "output", "Hel")
-	check("\r\033[K  [stream] ~h output\r\nHel\0337\r\n" + prompt)
+	check("\r\033[K  [stream] ~h output\r\nHel\r\n" + prompt)
 	printStreamChunk("h", "output", "lo\n")
-	check("\r\033[K\0338lo\r\n\0337" + prompt)
+	check("\r\033[Klo\r\n" + prompt)
 	printStreamChunk("other", "output", "next")
-	check("\r\033[K  [stream] ~other output\r\nnext\0337\r\n" + prompt)
+	check("\r\033[K  [stream] ~other output\r\nnext\r\n" + prompt)
 	printAbovePrompt("notice")
 	check("\r\033[Knotice\r\n" + prompt)
 	printStreamChunk("h", "output", "again")
-	check("\r\033[K  [stream] ~h output\r\nagain\0337\r\n" + prompt)
+	check("\r\033[K  [stream] ~h output\r\nagain\r\n" + prompt)
 
 	resp := response.New("alias.run", "h").WithFlag("ok").WithArg("output", "Hello\nagain")
 	printResponse(resp, nil)
@@ -103,38 +103,38 @@ func TestStreamChunksPreserveSplitBytesAndCRLF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "\r\033[K  [stream] ~h output\r\né\r\0337\r\n> " +
-		"\r\033[K\0338\n\0337> "
+	want := "\r\033[K  [stream] ~h output\r\né\r\r\n> " +
+		"\r\033[K\r\n> "
 	if string(got) != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
+}
 
-	func TestIncompleteUTF8IsFlushedOnCompletion(t *testing.T) {
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		old := os.Stdout
-		os.Stdout = w
-		waitingForInput = false
-		streamAtPrompt = false
-		t.Cleanup(func() {
-			os.Stdout = old
-			r.Close()
-			w.Close()
-		})
-		printStreamChunk("h", "output", "\xc3")
-		finishStreamChunks("h")
-		if err := w.Close(); err != nil {
-			t.Fatal(err)
-		}
-		got, err := io.ReadAll(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := "\r\033[K  [stream] ~h output\r\n�\r\n"
-		if string(got) != want {
-			t.Fatalf("output = %q, want %q", got, want)
-		}
+func TestIncompleteUTF8IsFlushedOnCompletion(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	waitingForInput = false
+	streamAtPrompt = false
+	t.Cleanup(func() {
+		os.Stdout = old
+		r.Close()
+		w.Close()
+	})
+	printStreamChunk("h", "output", "\xc3")
+	finishStreamChunks("h")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "\r\033[K  [stream] ~h output\r\n�\r\n"
+	if string(got) != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

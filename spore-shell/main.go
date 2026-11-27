@@ -42,10 +42,9 @@ var inputBuf []rune
 var inputCursor int
 var inputConfirm *pendingConfirmState
 
-// The saved terminal cursor marks the end of the last live chunk, above the prompt.
+// streamAtPrompt records which live field was last displayed above the prompt.
 var streamAtPrompt bool
 var streamHandle, streamField string
-var streamLastCR bool
 
 type streamKey struct {
 	handle string
@@ -123,8 +122,7 @@ func printAbovePrompt(msg string) {
 	}
 }
 
-// printStreamChunk keeps adjacent chunks of the same field together while
-// leaving the editable prompt below the live output.
+// printStreamChunk displays each chunk above the editable prompt.
 func printStreamChunk(handle, field, text string) {
 	if text == "" {
 		return
@@ -151,24 +149,21 @@ func printStreamChunk(handle, field, text string) {
 	var output strings.Builder
 	output.WriteString("\r\033[K")
 	continuing := waitingForInput && streamAtPrompt && streamHandle == handle && streamField == field
-	if continuing {
-		output.WriteString("\0338")
-	} else {
+	if !continuing {
 		fmt.Fprintf(&output, "  [stream] ~%s %s\r\n", handle, field)
-		streamLastCR = false
 	}
+	lastCR := false
 	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' && !streamLastCR {
+		if text[i] == '\n' && !lastCR {
 			output.WriteByte('\r')
 		}
 		output.WriteByte(text[i])
-		streamLastCR = text[i] == '\r'
+		lastCR = text[i] == '\r'
 	}
 
 	if waitingForInput {
 		streamAtPrompt = true
 		streamHandle, streamField = handle, field
-		output.WriteString("\0337")
 		if !strings.HasSuffix(text, "\n") {
 			output.WriteString("\r\n")
 		}

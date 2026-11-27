@@ -280,112 +280,16 @@ func printResponse(resp *response.Response, rerr *response.ResponseError) {
 	fmt.Println()
 }
 
-// parseRespArgs extracts all non-reserved key=value pairs from a serialized response.
+// parseRespArgs extracts decoded, non-reserved response arguments.
 func parseRespArgs(resp *response.Response) map[string]string {
-	raw := resp.Serialize()
-	fields := splitFields(raw)
 	args := make(map[string]string)
 	skipArgs := map[string]bool{"capture": true, "code": true, "what": true, "cast": true}
-	skipFlags := map[string]bool{
-		"ok": true, "cancelled": true, "error": true,
-		"node_error": true, "spore_error": true, "cast_error": true, "capture_error": true,
-	}
-	for _, f := range fields[1:] { // skip the ~handle:command token
-		if strings.Contains(f, "=") {
-			kv := strings.SplitN(f, "=", 2)
-			if skipArgs[kv[0]] {
-				continue
-			}
-			v := unwrapBlockValue(kv[1])
-			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-				v = v[1 : len(v)-1]
-			}
-			args[kv[0]] = v
-		} else if skipFlags[f] {
-			continue
+	for _, key := range resp.Args() {
+		if !skipArgs[key] {
+			args[key], _ = resp.Arg(key)
 		}
 	}
 	return args
-}
-
-// unwrapBlockValue removes a block literal's protocol delimiters while
-// preserving all content lines, including intentional blank lines.
-func unwrapBlockValue(value string) string {
-	if !strings.HasPrefix(value, "<<") {
-		return value
-	}
-
-	value = value[2:]
-	switch {
-	case strings.HasPrefix(value, "\r\n"):
-		value = value[2:]
-	case strings.HasPrefix(value, "\n"):
-		value = value[1:]
-	}
-	switch {
-	case strings.HasSuffix(value, "\r\n>>"):
-		return value[:len(value)-4]
-	case strings.HasSuffix(value, "\n>>"):
-		return value[:len(value)-3]
-	default:
-		return value
-	}
-}
-
-// splitFields splits a Spore wire string by spaces, respecting quoted strings
-// nested [array] / {object} tokens, and multiline block values.
-func splitFields(s string) []string {
-	var fields []string
-	var current strings.Builder
-	inDouble := false
-	inBlock := false
-	blockLineStart := false
-	depth := 0
-
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch {
-		case inBlock && blockLineStart && strings.HasPrefix(s[i:], ">>") &&
-			(i+2 == len(s) || s[i+2] == ' ' || s[i+2] == '\r' || s[i+2] == '\n'):
-			current.WriteString(">>")
-			i++
-			inBlock = false
-			blockLineStart = false
-		case inBlock:
-			current.WriteByte(ch)
-			blockLineStart = ch == '\n'
-		case ch == '"' && !inDouble:
-			inDouble = true
-			current.WriteByte(ch)
-		case ch == '\\' && inDouble && i+1 < len(s):
-			current.WriteByte(ch)
-			current.WriteByte(s[i+1])
-			i++
-		case ch == '"' && inDouble:
-			inDouble = false
-			current.WriteByte(ch)
-		case (ch == '[' || ch == '{') && !inDouble:
-			depth++
-			current.WriteByte(ch)
-		case (ch == ']' || ch == '}') && !inDouble:
-			depth--
-			current.WriteByte(ch)
-		case (ch == ' ' || ch == '\r' || ch == '\n') && !inDouble && depth == 0:
-			if current.Len() > 0 {
-				fields = append(fields, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteByte(ch)
-			if strings.HasSuffix(current.String(), "=<<") {
-				inBlock = true
-			}
-		}
-	}
-	if current.Len() > 0 {
-		fields = append(fields, current.String())
-	}
-	return fields
 }
 
 // maxLineWidth is the target wrap width for long single-line values.

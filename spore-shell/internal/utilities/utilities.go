@@ -41,21 +41,9 @@ func requestParts(s string) (int, bool) {
 	var quote rune
 	var delimiters []rune
 	escaped := false
-	inBlock := false
-	lineStart := false
 	tokenStart := true
 
 	for i, r := range s {
-		if inBlock {
-			if lineStart && strings.HasPrefix(s[i:], ">>") {
-				next, _ := utf8.DecodeRuneInString(s[i+2:])
-				if i+2 == len(s) || unicode.IsSpace(next) {
-					inBlock = false
-				}
-			}
-			lineStart = r == '\n'
-			continue
-		}
 		if quote != 0 {
 			if escaped {
 				escaped = false
@@ -68,12 +56,6 @@ func requestParts(s string) (int, bool) {
 			if r == quote {
 				quote = 0
 			}
-			continue
-		}
-		if len(delimiters) == 0 && r == '<' && i > 0 && s[i-1] == '=' && strings.HasPrefix(s[i:], "<<") {
-			inBlock = true
-			lineStart = false
-			tokenStart = false
 			continue
 		}
 		switch r {
